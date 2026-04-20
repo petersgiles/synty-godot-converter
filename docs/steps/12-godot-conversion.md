@@ -1,6 +1,6 @@
 # Step 12: Godot CLI Mesh Conversion
 
-This document provides comprehensive documentation of the `godot_converter.gd` GDScript module, which runs inside Godot's headless mode to convert FBX files into individual mesh scenes with materials applied.
+This document provides comprehensive documentation of the `godot_converter.gd` GDScript module, which runs inside Godot's headless mode to convert imported model files (FBX or GLB) into individual mesh scenes with materials applied.
 
 ## Table of Contents
 
@@ -53,12 +53,12 @@ This document provides comprehensive documentation of the `godot_converter.gd` G
 
 ## Overview
 
-The `godot_converter.gd` script is the Godot-side component of the Synty conversion pipeline. It runs inside Godot's headless mode (no GUI) and performs the final conversion step: extracting individual meshes from FBX files and saving them as `.tscn` or `.res` scene files with proper material assignments.
+The `godot_converter.gd` script is the Godot-side component of the Synty conversion pipeline. It runs inside Godot's headless mode (no GUI) and performs the final conversion step: extracting individual meshes from imported model files and saving them as `.tscn` or `.res` scene files with proper material assignments.
 
 **Key Capabilities:**
 
-- Converts FBX files to individual mesh scenes (one scene per MeshInstance3D)
-- Alternatively saves all meshes from one FBX in a combined scene
+- Converts imported FBX/GLB model files to individual mesh scenes (one scene per MeshInstance3D)
+- Saves combined scenes when requested, and automatically does so for rigged character models so skeleton-bearing scenes keep material overrides
 - Applies pre-generated `.tres` materials as external references
 - Handles collision meshes with green wireframe debug material
 - Preserves directory structure from source FBX files
@@ -94,7 +94,7 @@ This phase runs the `godot_converter.gd` script, which:
 1. Reads configuration from `converter_config.json`
 2. Loads mesh-to-material mappings from JSON
 3. Discovers pack folders
-4. Processes each FBX file, extracting meshes and applying materials
+4. Processes each model file, extracting meshes and applying materials
 5. Saves scene files to the `meshes/` directory
 
 The Python converter generates `converter_config.json` and copies the GDScript to the project before running.

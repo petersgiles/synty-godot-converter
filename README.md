@@ -1,6 +1,6 @@
 # Synty Unity-to-Godot Converter
 
-Convert Synty Studios Unity asset packs (`.unitypackage` files) to Godot 4.6 with full shader support, automatic material conversion, and FBX mesh processing.
+Convert Synty Studios Unity asset packs (`.unitypackage` files) to Godot 4.6 with full shader support, automatic material conversion, and mixed FBX/GLB model processing.
 
 **Version 2.4** - Output subfolder organization, retain source directory structure.
 
@@ -9,7 +9,7 @@ Convert Synty Studios Unity asset packs (`.unitypackage` files) to Godot 4.6 wit
 - **Full material conversion** - Parses Unity `.mat` files and generates Godot `ShaderMaterial` `.tres` files
 - **3-tier shader detection** - GUID lookup (56 known shaders), name pattern matching, property-based analysis
 - **7 Godot shaders** - Polygon, Foliage, Crystal, Water, Clouds, Particles, Skydome
-- **FBX mesh conversion** - Imports FBX models via Godot CLI with materials pre-assigned
+- **FBX/GLB mesh conversion** - Imports prepared models via Godot CLI with materials pre-assigned
 - **Texture handling** - Extracts textures from `.unitypackage` with fallback to SourceFiles
 - **Modern GUI** - CustomTkinter interface with real-time logging, progress display, and settings persistence
 - **Global shader uniforms** - Generates `project.godot` with wind, sky, and water parameters
@@ -24,6 +24,7 @@ Convert Synty Studios Unity asset packs (`.unitypackage` files) to Godot 4.6 wit
 - **Comprehensive fallback matching** - Name variations, prefix swaps, and fuzzy matching (Levenshtein) for materials
 - **Output subfolder organization** - Organize converted packs into custom subfolders with `--output-subfolder`
 - **Retain source structure** - Preserve `Source_Files/FBX/` subdirectory structure in mesh output with `--retain-subfolders`
+- **Optional Blender GLB path** - Convert character and animation FBX files to GLB first with `--animated-to-glb`
 
 ## Quick Start
 
@@ -47,6 +48,7 @@ python gui.py
 **Requirements:**
 - Python 3.10+
 - Godot 4.6 (mono or standard)
+- Blender (optional, only for `--animated-to-glb`)
 
 **GUI dependencies** (optional):
 ```bash
@@ -76,6 +78,8 @@ This installs CustomTkinter for the graphical interface.
 | `--mesh-scale` | No | Scale factor for mesh output (e.g., `100` for undersized packs) |
 | `--output-subfolder` | No | Subfolder path prepended to pack folder names |
 | `--retain-subfolders` | No | Preserve Source_Files/FBX/ subdirectory structure in mesh output |
+| `--blender` | No | Path to Blender executable for headless FBX-to-GLB export |
+| `--animated-to-glb` | No | Convert character/animation FBX files to GLB before Godot import |
 
 ## Output Structure
 
@@ -87,16 +91,18 @@ output/
   PackName/
     textures/                # Extracted textures
     materials/               # Generated .tres ShaderMaterials
-    models/                  # Copied FBX files (clean paths, structure preserved)
+    models/                  # Prepared FBX/GLB files (clean paths, structure preserved)
     meshes/                  # Mesh output organized by configuration
       tscn_separate/         # --mesh-format tscn (default, one file per mesh)
-      tscn_combined/         # --mesh-format tscn --keep-meshes-together
+      tscn_combined/         # --keep-meshes-together or auto-saved rigged character scenes
       res_separate/          # --mesh-format res (one file per mesh)
       res_combined/          # --mesh-format res --keep-meshes-together
     mesh_material_mapping.json  # Per-pack mesh-to-material mappings
 ```
 
 **Mesh subfolder naming**: Output goes to `meshes/{format}_{mode}/` based on your options. This allows multiple output configurations to coexist without overwriting each other.
+
+**Rigged GLB scenes**: When `--animated-to-glb` produces a rigged character model with meshes, the converter also saves a combined scene with material overrides in `meshes/tscn_combined/` so skeleton-bearing character scenes are usable without relying on the raw imported GLB materials.
 
 **Multi-pack workflow**: Each pack folder is self-contained with its own `mesh_material_mapping.json`. The `conversion_log.txt` at the project root appends entries from each conversion, making it easy to track multiple pack imports.
 
@@ -117,7 +123,7 @@ The converter runs a 12-step pipeline:
 | 7 | Generate Godot `.tres` ShaderMaterial files |
 | 8 | Copy community shader files (with dynamic path discovery) |
 | 9 | Copy textures with smart filtering and fallback resolution |
-| 10 | Copy FBX models (clean paths, optional scale) |
+| 10 | Prepare model files (copy FBX, optionally export character/animation assets to GLB) |
 | 11 | Generate per-pack `mesh_material_mapping.json` |
 | 12 | Run Godot CLI for mesh-to-scene conversion (with fallback matching) |
 

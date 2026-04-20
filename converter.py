@@ -43,6 +43,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -56,6 +57,7 @@ from tres_generator import generate_tres, write_tres_file, sanitize_filename
 from material_list import (
     parse_material_list,
     generate_mesh_material_mapping_json,
+    get_mesh_to_materials_map,
     get_custom_shader_materials,
     PrefabMaterials,
 )
@@ -64,6 +66,7 @@ logger = logging.getLogger(__name__)
 
 _BINARY_STRING_PATTERN = re.compile(rb"[A-Za-z0-9_./\\:-]{4,}")
 _FBX_TEXTURE_EXTENSIONS = {".png", ".tga", ".jpg", ".jpeg", ".psd", ".tif", ".tiff"}
+_ANIMATED_MODEL_HINTS = ("animation", "animations", "character", "characters")
 
 
 def has_source_assets_recursive(path: Path) -> bool:
@@ -362,6 +365,10 @@ class ConversionConfig:
             subdirectory structure when creating mesh files. All meshes go directly
             into meshes/tscn_separate/ instead of preserving source paths. Set to
             False (via --retain-subfolders CLI flag) to preserve original structure.
+        blender_exe: Optional path to Blender executable used for headless
+            FBX-to-GLB export of animated/skinned assets.
+        animated_to_glb: If True, convert character/animation FBX files to GLB
+            with Blender before the Godot import phase.
 
     Example:
         >>> config = ConversionConfig(
@@ -391,6 +398,8 @@ class ConversionConfig:
     mesh_scale: float = 1.0
     output_subfolder: str | None = None
     flatten_output: bool = True
+    blender_exe: Path | None = None
+    animated_to_glb: bool = False
 
 
 @dataclass
@@ -458,6 +467,22 @@ class ConversionStats:
     godot_timeout_occurred: bool = False
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+
+
+def resolve_blender_executable(blender_exe: Path | None) -> Path | None:
+    """Resolve Blender executable from an explicit path or common PATH locations."""
+    if blender_exe is not None:
+        return blender_exe.expanduser()
+
+    detected = shutil.which("blender")
+    if detected:
+        return Path(detected)
+
+    snap_blender = Path("/snap/bin/blender")
+    if snap_blender.exists():
+        return snap_blender
+
+    return None
 
 
 def parse_args() -> ConversionConfig:
@@ -590,6 +615,17 @@ Examples:
         help="Retain Source_Files/FBX/ subdirectory structure in mesh output. "
              "By default, paths are flattened and all meshes go directly to meshes/tscn_separate/.",
     )
+    parser.add_argument(
+        "--blender",
+        type=Path,
+        default=None,
+        help="Path to Blender executable for headless FBX-to-GLB export.",
+    )
+    parser.add_argument(
+        "--animated-to-glb",
+        action="store_true",
+        help="Convert character/animation FBX files to GLB with Blender before Godot import.",
+    )
 
     args = parser.parse_args()
 
@@ -625,6 +661,14 @@ Examples:
     if not args.godot.exists():
         parser.error(f"Godot executable not found: {args.godot}")
 
+    resolved_blender = None
+    if args.animated_to_glb:
+        if args.blender is not None and not args.blender.exists():
+            parser.error(f"Blender executable not found: {args.blender}")
+        resolved_blender = resolve_blender_executable(args.blender)
+        if resolved_blender is None:
+            parser.error("--animated-to-glb requires Blender. Pass --blender PATH or install blender on PATH.")
+
     return ConversionConfig(
         unity_package=args.unity_package.resolve(),
         source_files=resolved_source_files.resolve(),
@@ -643,6 +687,8 @@ Examples:
         mesh_scale=args.mesh_scale,
         output_subfolder=args.output_subfolder,
         flatten_output=not args.retain_subfolders,
+        blender_exe=resolved_blender,
+        animated_to_glb=args.animated_to_glb,
     )
 
 
@@ -652,13 +698,16 @@ def detect_existing_pack(pack_output_dir: Path) -> dict:
     Returns a dict indicating which prerequisites exist:
     - has_materials: True if materials/*.tres files exist
     - has_textures: True if textures/ has files
-    - has_models: True if models/**/*.fbx files exist
+    - has_models: True if models/**/*.fbx or models/**/*.glb files exist
     - has_mapping: True if mesh_material_mapping.json exists
     """
     return {
         "has_materials": bool(list((pack_output_dir / "materials").glob("*.tres"))) if (pack_output_dir / "materials").exists() else False,
         "has_textures": bool(list((pack_output_dir / "textures").glob("*.*"))) if (pack_output_dir / "textures").exists() else False,
-        "has_models": bool(list((pack_output_dir / "models").rglob("*.fbx"))) if (pack_output_dir / "models").exists() else False,
+        "has_models": (
+            bool(list((pack_output_dir / "models").rglob("*.fbx")))
+            or bool(list((pack_output_dir / "models").rglob("*.glb")))
+        ) if (pack_output_dir / "models").exists() else False,
         "has_mapping": (pack_output_dir / "mesh_material_mapping.json").exists(),
     }
 
@@ -1265,6 +1314,302 @@ def copy_fbx_files(
 
     logger.debug("Copied %d FBX files, skipped %d existing", copied, skipped)
     return copied, skipped
+
+
+def find_source_fbx_files(
+    source_fbx_dir: Path,
+    filter_pattern: str | None = None,
+    additional_fbx_dirs: list[Path] | None = None,
+) -> list[tuple[Path, Path]]:
+    """Find FBX files and the directory each file should be made relative to."""
+    all_fbx_dirs = [source_fbx_dir]
+    if additional_fbx_dirs:
+        all_fbx_dirs.extend(additional_fbx_dirs)
+
+    fbx_files: list[tuple[Path, Path]] = []
+    for fbx_dir in all_fbx_dirs:
+        if not fbx_dir.exists():
+            logger.debug("FBX directory not found, skipping: %s", fbx_dir)
+            continue
+        for source_path in fbx_dir.rglob("*.fbx"):
+            fbx_files.append((source_path, fbx_dir))
+
+    if filter_pattern:
+        pattern_lower = filter_pattern.lower()
+        original_count = len(fbx_files)
+        fbx_files = [
+            (source_path, base_dir)
+            for source_path, base_dir in fbx_files
+            if pattern_lower in source_path.stem.lower()
+        ]
+        logger.debug(
+            "Filter '%s' matched %d of %d FBX files",
+            filter_pattern,
+            len(fbx_files),
+            original_count,
+        )
+
+    return fbx_files
+
+
+def should_convert_fbx_to_glb(source_path: Path) -> bool:
+    """Return True for the conservative first-pass animated/skinned GLB targets."""
+    name_parts = [source_path.stem.lower(), *(part.lower() for part in source_path.parts)]
+    return any(hint in part for hint in _ANIMATED_MODEL_HINTS for part in name_parts)
+
+
+def get_clean_model_relative_path(source_path: Path, base_dir: Path) -> Path:
+    """Strip common SourceFiles/FBX wrapper prefixes from model paths."""
+    relative_path = source_path.relative_to(base_dir)
+    path_parts = list(relative_path.parts)
+    common_prefixes = {"sourcefiles", "source_files", "source files", "fbx", "models", "bonusfbx"}
+
+    while path_parts and path_parts[0].lower() in common_prefixes:
+        path_parts.pop(0)
+
+    if path_parts:
+        return Path(*path_parts)
+    return Path(relative_path.name)
+
+
+def export_fbx_to_glb(
+    blender_exe: Path,
+    source_path: Path,
+    output_glb_path: Path,
+    dry_run: bool,
+    material_manifest_path: Path | None = None,
+) -> tuple[bool, bool]:
+    """Export one FBX to GLB with Blender.
+
+    Returns:
+        Tuple of (prepared, skipped_existing).
+    """
+    if output_glb_path.exists():
+        try:
+            if (
+                output_glb_path.stat().st_size > 0
+                and output_glb_path.stat().st_mtime >= source_path.stat().st_mtime
+            ):
+                logger.debug("Skipping existing GLB: %s", output_glb_path.relative_to(output_glb_path.parents[1]))
+                return False, True
+        except OSError:
+            pass
+
+    if dry_run:
+        logger.debug("[DRY RUN] Would export GLB: %s", output_glb_path)
+        return True, False
+
+    blender_script = Path(__file__).with_name("blender_fbx_to_glb.py")
+    output_glb_path.parent.mkdir(parents=True, exist_ok=True)
+
+    result = subprocess.run(
+        [
+            str(blender_exe),
+            "--background",
+            "--factory-startup",
+            "--python",
+            str(blender_script),
+            "--",
+            str(source_path),
+            str(output_glb_path),
+            *( [str(material_manifest_path)] if material_manifest_path is not None else [] ),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        logger.error("Blender GLB export failed for %s", source_path)
+        if result.stdout:
+            logger.error("Blender stdout:\n%s", result.stdout.strip())
+        if result.stderr:
+            logger.error("Blender stderr:\n%s", result.stderr.strip())
+        return False, False
+
+    logger.debug("Exported GLB: %s", output_glb_path)
+    stale_fbx_path = output_glb_path.with_suffix(".fbx")
+    if stale_fbx_path.exists():
+        stale_fbx_path.unlink()
+    return True, False
+
+
+def prepare_model_assets(
+    source_fbx_dir: Path,
+    output_models_dir: Path,
+    dry_run: bool,
+    filter_pattern: str | None = None,
+    additional_fbx_dirs: list[Path] | None = None,
+    blender_exe: Path | None = None,
+    animated_to_glb: bool = False,
+    mesh_material_map: dict[str, list[str]] | None = None,
+    mapped_materials: list[MappedMaterial] | None = None,
+    textures_dir: Path | None = None,
+) -> tuple[int, int]:
+    """Prepare model assets in output/models, exporting selected FBXs to GLB."""
+    fbx_files = find_source_fbx_files(source_fbx_dir, filter_pattern, additional_fbx_dirs)
+    if not fbx_files:
+        return 0, 0
+
+    prepared = 0
+    skipped = 0
+    glb_targets = 0
+
+    for source_path, base_dir in fbx_files:
+        relative_path = get_clean_model_relative_path(source_path, base_dir)
+        convert_to_glb = animated_to_glb and should_convert_fbx_to_glb(source_path)
+
+        if convert_to_glb:
+            if blender_exe is None:
+                raise RuntimeError("Animated GLB export requested without Blender configured")
+            glb_targets += 1
+            dest_path = (output_models_dir / relative_path).with_suffix(".glb")
+            material_manifest_path = None
+            if mesh_material_map is not None and mapped_materials is not None and textures_dir is not None and not dry_run:
+                material_manifest_path = write_glb_material_manifest(
+                    mesh_material_map,
+                    mapped_materials,
+                    textures_dir,
+                    source_path=source_path,
+                )
+            exported, skipped_existing = export_fbx_to_glb(
+                blender_exe,
+                source_path,
+                dest_path,
+                dry_run,
+                material_manifest_path=material_manifest_path,
+            )
+            if material_manifest_path is not None:
+                material_manifest_path.unlink(missing_ok=True)
+            prepared += int(exported)
+            skipped += int(skipped_existing)
+            continue
+
+        dest_path = output_models_dir / relative_path
+        if dest_path.exists():
+            if dest_path.stat().st_size == source_path.stat().st_size:
+                logger.debug("Skipping existing FBX: %s", relative_path)
+                skipped += 1
+                continue
+
+        if dry_run:
+            logger.debug("[DRY RUN] Would copy FBX: %s", relative_path)
+            prepared += 1
+        else:
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_path, dest_path)
+            logger.debug("Copied FBX: %s", relative_path)
+            prepared += 1
+
+    if animated_to_glb:
+        logger.debug("Prepared %d model files (%d GLB targets), skipped %d existing", prepared, glb_targets, skipped)
+    else:
+        logger.debug("Prepared %d FBX files, skipped %d existing", prepared, skipped)
+
+    return prepared, skipped
+
+
+def _preferred_glb_texture_name(mapped_material: MappedMaterial) -> str | None:
+    """Choose the best texture stem to embed into exported GLB materials."""
+    preferred_keys = (
+        "base_texture",
+        "albedo_map",
+        "leaf_texture",
+        "trunk_texture",
+        "top_albedo",
+        "base_albedo",
+    )
+    for key in preferred_keys:
+        texture_name = mapped_material.textures.get(key)
+        if texture_name:
+            return texture_name
+
+    for texture_name in mapped_material.textures.values():
+        if texture_name:
+            return texture_name
+
+    return None
+
+
+def _resolve_copied_texture_path(textures_dir: Path, texture_name: str) -> Path | None:
+    """Resolve a copied texture file from its stem name."""
+    suffix_priority = [".png", ".tga", ".jpg", ".jpeg", ".psd", ".tif", ".tiff"]
+    normalized_name = Path(texture_name).name
+    exact_path = textures_dir / normalized_name
+    if exact_path.exists() and exact_path.suffix.lower() in suffix_priority:
+        return exact_path
+
+    stem = Path(texture_name).stem
+    candidates = sorted(
+        path
+        for path in textures_dir.glob(f"{stem}.*")
+        if path.suffix.lower() in suffix_priority
+    )
+    if not candidates:
+        return None
+
+    def sort_key(path: Path) -> tuple[int, str]:
+        try:
+            priority = suffix_priority.index(path.suffix.lower())
+        except ValueError:
+            priority = len(suffix_priority)
+        return (priority, path.name)
+
+    return sorted(candidates, key=sort_key)[0]
+
+
+def write_glb_material_manifest(
+    mesh_material_map: dict[str, list[str]],
+    mapped_materials: list[MappedMaterial],
+    textures_dir: Path,
+    source_path: Path | None = None,
+) -> Path | None:
+    """Write a temporary manifest for Blender GLB material assignment."""
+    mesh_material_subset = mesh_material_map
+    if source_path is not None:
+        strings = set(_extract_binary_strings(source_path))
+        strings.add(source_path.stem)
+        mesh_material_subset = {
+            mesh_name: material_names
+            for mesh_name, material_names in mesh_material_map.items()
+            if mesh_name in strings
+        }
+
+    referenced_materials = {
+        material_name
+        for material_names in mesh_material_subset.values()
+        for material_name in material_names
+        if material_name
+    }
+    if not mesh_material_subset or not referenced_materials:
+        return None
+
+    material_defs: dict[str, dict[str, str | None]] = {}
+
+    for mapped_material in mapped_materials:
+        if mapped_material.name not in referenced_materials:
+            continue
+        texture_name = _preferred_glb_texture_name(mapped_material)
+        texture_path = (
+            _resolve_copied_texture_path(textures_dir, texture_name)
+            if texture_name is not None
+            else None
+        )
+        material_defs[mapped_material.name] = {
+            "texture_path": str(texture_path) if texture_path is not None else None,
+        }
+
+    manifest = {
+        "mesh_materials": mesh_material_subset,
+        "materials": material_defs,
+    }
+
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        suffix="-glb-materials.json",
+        delete=False,
+    ) as tmp:
+        json.dump(manifest, tmp, indent=2)
+        return Path(tmp.name)
 
 
 def generate_converter_config(
@@ -2226,7 +2571,9 @@ def run_conversion(config: ConversionConfig) -> ConversionStats:
 
     # Check for existing pack to enable incremental conversion
     existing_pack = detect_existing_pack(pack_output_dir)
-    skip_to_godot = all(existing_pack.values())
+    skip_to_godot = all(existing_pack.values()) and not (
+        config.animated_to_glb and not config.skip_fbx_copy
+    )
     if skip_to_godot:
         logger.info("Existing pack detected with all prerequisites - skipping to mesh generation")
         logger.info("  Materials: %s, Textures: %s, Models: %s, Mapping: %s",
@@ -2235,6 +2582,7 @@ def run_conversion(config: ConversionConfig) -> ConversionStats:
 
     # Store temp dir path for cleanup (always runs via finally, even on error)
     temp_dir_to_cleanup = None
+    temp_files_to_cleanup: list[Path] = []
 
     # Steps 3-10: Skip if existing pack detected with all prerequisites
     if not skip_to_godot:
@@ -2455,62 +2803,67 @@ def run_conversion(config: ConversionConfig) -> ConversionStats:
                 high_quality_textures=config.high_quality_textures,
             )
 
-            # Step 9: Copy FBX files
-            # Simplified approach: find ALL .fbx files recursively, preserving relative path structure
+            mesh_material_map: dict[str, list[str]] = {}
+            unresolved_meshes: list[str] = []
+            referenced_materials: set[str] = set()
+
+            if prefabs:
+                mesh_material_map = get_mesh_to_materials_map(prefabs)
+                for prefab in prefabs:
+                    for mesh in prefab.meshes:
+                        for slot in mesh.slots:
+                            if slot.material_name:
+                                referenced_materials.add(slot.material_name)
+            else:
+                logger.info("No MaterialList data available - inferring mesh-material mapping from FBX metadata")
+                mesh_material_map, unresolved_meshes = build_fallback_mesh_material_map(
+                    config.source_files,
+                    mapped_materials,
+                    config.filter_pattern,
+                )
+
+                referenced_materials = {
+                    material_name
+                    for material_names in mesh_material_map.values()
+                    for material_name in material_names
+                    if material_name
+                }
+
+            # Step 9: Prepare model assets
             if not config.skip_fbx_copy:
-                # Find all FBX files recursively from source root
-                # Note: On Windows, rglob is case-insensitive so *.fbx matches *.FBX
-                fbx_files = list(config.source_files.rglob("*.fbx"))
+                fbx_files = find_source_fbx_files(
+                    config.source_files,
+                    filter_pattern=config.filter_pattern,
+                )
                 total_count = len(fbx_files)
 
-                if config.filter_pattern:
-                    # Apply filter to FBX filenames
-                    pattern_lower = config.filter_pattern.lower()
-                    fbx_files = [f for f in fbx_files if pattern_lower in f.stem.lower()]
+                if config.animated_to_glb:
+                    glb_target_count = sum(1 for source_path, _ in fbx_files if should_convert_fbx_to_glb(source_path))
                     logger.info(
-                        "Step 9: Copying %d of %d FBX files (filter: %s)...",
-                        len(fbx_files), total_count, config.filter_pattern
+                        "Step 9: Preparing %d model files (%d GLB targets via Blender)...",
+                        total_count,
+                        glb_target_count,
+                    )
+                elif config.filter_pattern:
+                    logger.info(
+                        "Step 9: Copying %d FBX files (filter: %s)...",
+                        total_count,
+                        config.filter_pattern,
                     )
                 else:
-                    logger.info("Step 9: Copying %d FBX files...", len(fbx_files))
+                    logger.info("Step 9: Copying %d FBX files...", total_count)
 
-                models_dir = pack_output_dir / "models"
-
-                # Common prefixes to strip from FBX paths (case-insensitive)
-                common_prefixes = {"sourcefiles", "source_files", "source files", "fbx", "models", "bonusfbx"}
-
-                for fbx_path in fbx_files:
-                    # Get relative path from source and strip common prefixes
-                    rel_path = fbx_path.relative_to(config.source_files)
-                    path_parts = list(rel_path.parts)
-
-                    # Strip leading parts that match common prefixes
-                    while path_parts and path_parts[0].lower() in common_prefixes:
-                        path_parts.pop(0)
-
-                    # Reconstruct path from remaining parts (or use filename if all stripped)
-                    if path_parts:
-                        clean_rel_path = Path(*path_parts)
-                    else:
-                        clean_rel_path = Path(rel_path.name)
-
-                    dest_path = models_dir / clean_rel_path
-
-                    # Skip if destination already exists and is same size
-                    if dest_path.exists():
-                        if dest_path.stat().st_size == fbx_path.stat().st_size:
-                            logger.debug("Skipping existing FBX: %s", clean_rel_path)
-                            stats.fbx_skipped += 1
-                            continue
-
-                    if config.dry_run:
-                        logger.debug("[DRY RUN] Would copy FBX: %s", clean_rel_path)
-                    else:
-                        dest_path.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(fbx_path, dest_path)
-                        logger.debug("Copied FBX: %s", clean_rel_path)
-
-                    stats.fbx_copied += 1
+                stats.fbx_copied, stats.fbx_skipped = prepare_model_assets(
+                    config.source_files,
+                    pack_output_dir / "models",
+                    config.dry_run,
+                    filter_pattern=config.filter_pattern,
+                    blender_exe=config.blender_exe,
+                    animated_to_glb=config.animated_to_glb,
+                    mesh_material_map=mesh_material_map if config.animated_to_glb else None,
+                    mapped_materials=mapped_materials if config.animated_to_glb else None,
+                    textures_dir=output_textures if config.animated_to_glb else None,
+                )
 
                 if stats.fbx_copied == 0 and stats.fbx_skipped == 0 and total_count == 0:
                     warning_msg = f"No FBX files found in {config.source_files}"
@@ -2522,7 +2875,6 @@ def run_conversion(config: ConversionConfig) -> ConversionStats:
             # Note: mapping goes to pack_output_dir so each pack has its own mapping
             logger.info("Step 10: Generating mesh material mapping...")
             mapping_output = pack_output_dir / "mesh_material_mapping.json"
-            referenced_materials: set[str] = set()
 
             if prefabs:
                 if config.dry_run:
@@ -2530,37 +2882,17 @@ def run_conversion(config: ConversionConfig) -> ConversionStats:
                 else:
                     generate_mesh_material_mapping_json(prefabs, mapping_output)
                     logger.debug("Generated mesh_material_mapping.json to pack folder")
-
-                for prefab in prefabs:
-                    for mesh in prefab.meshes:
-                        for slot in mesh.slots:
-                            if slot.material_name:
-                                referenced_materials.add(slot.material_name)
             else:
-                logger.info("No MaterialList data available - inferring mesh-material mapping from FBX metadata")
-                fallback_mesh_map, unresolved_meshes = build_fallback_mesh_material_map(
-                    config.source_files,
-                    mapped_materials,
-                    config.filter_pattern,
-                )
-
-                referenced_materials = {
-                    material_name
-                    for material_names in fallback_mesh_map.values()
-                    for material_name in material_names
-                    if material_name
-                }
-
                 if config.dry_run:
                     logger.debug(
                         "[DRY RUN] Would write fallback mesh_material_mapping.json with %d mesh entries",
-                        len(fallback_mesh_map),
+                        len(mesh_material_map),
                     )
-                elif fallback_mesh_map:
-                    write_mesh_material_mapping_json(fallback_mesh_map, mapping_output)
+                elif mesh_material_map:
+                    write_mesh_material_mapping_json(mesh_material_map, mapping_output)
                     logger.debug(
                         "Generated fallback mesh_material_mapping.json with %d mesh entries",
-                        len(fallback_mesh_map),
+                        len(mesh_material_map),
                     )
                 else:
                     logger.debug("Fallback mapping could not infer any mesh-material relationships")
@@ -2664,6 +2996,11 @@ def run_conversion(config: ConversionConfig) -> ConversionStats:
         if temp_dir_to_cleanup and temp_dir_to_cleanup.exists():
             shutil.rmtree(temp_dir_to_cleanup, ignore_errors=True)
             logger.debug("Cleaned up temp texture directory: %s", temp_dir_to_cleanup)
+        for temp_file in temp_files_to_cleanup:
+            try:
+                temp_file.unlink(missing_ok=True)
+            except OSError:
+                logger.debug("Failed to clean up temp file: %s", temp_file)
 
 
 def main() -> int:

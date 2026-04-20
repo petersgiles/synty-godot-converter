@@ -42,6 +42,7 @@ extends SceneTree
 ## arrays of material names in surface index order.
 ## @type Dictionary[String, Array[String]]
 var mesh_to_materials: Dictionary = {}
+var material_mapping_available := false
 
 ## Tracks mesh names that have been saved to detect duplicates across FBX files.
 ## Keys are output paths, values are true (just used as a set).
@@ -220,9 +221,9 @@ func _init() -> void:
 	print("")
 	print_summary()
 
-	# Exit with error code only if no meshes were saved at all
-	# Warnings (missing materials, etc.) are expected and shouldn't cause failure
-	var exit_code := 0 if meshes_saved > 0 else 1
+	# Exit with error code only for actual processing errors.
+	# Animation-only model files can legitimately produce zero extracted meshes.
+	var exit_code := 0 if errors == 0 else 1
 	quit(exit_code)
 
 
@@ -270,8 +271,7 @@ func process_pack_folder(pack_folder: String) -> void:
 
 	# Load material mapping for this pack (each pack has its own mapping file)
 	if not load_material_mapping(pack_folder):
-		printerr("  Failed to load material mapping for pack. Skipping.")
-		return
+		print("  Material mapping unavailable; mesh-bearing models will fail loudly if they need material assignment")
 
 	# Detect default material for this pack
 	var materials_path := pack_folder + "/materials"
@@ -287,20 +287,20 @@ func process_pack_folder(pack_folder: String) -> void:
 	# Ensure output directory exists
 	_ensure_directory_exists(meshes_output)
 
-	# Find all FBX files in the pack's models directory
-	var fbx_files := find_fbx_files(models_path)
+	# Find all model files in the pack's models directory
+	var model_files := find_model_files(models_path)
 
-	if fbx_files.is_empty():
-		print("  No FBX files found in %s" % models_path)
+	if model_files.is_empty():
+		print("  No model files found in %s" % models_path)
 		return
 
-	var total_fbx := fbx_files.size()
-	print("  Found %d FBX file(s) to process" % total_fbx)
+	var total_models := model_files.size()
+	print("  Found %d model file(s) to process" % total_models)
 
-	for i in range(fbx_files.size()):
-		var fbx_path := fbx_files[i]
-		print("[%d/%d] Processing: %s" % [i + 1, total_fbx, fbx_path.get_file()])
-		process_fbx_file(fbx_path)
+	for i in range(model_files.size()):
+		var model_path := model_files[i]
+		print("[%d/%d] Processing: %s" % [i + 1, total_models, model_path.get_file()])
+		process_model_file(model_path)
 
 
 ## Loads the mesh-to-material mapping from JSON file.
@@ -317,6 +317,7 @@ func load_material_mapping(pack_folder: String) -> bool:
 	var file := FileAccess.open(mapping_path, FileAccess.READ)
 	if file == null:
 		mesh_to_materials = {}
+		material_mapping_available = false
 		printerr("Failed to open mapping file: %s (error: %s)" % [
 			mapping_path,
 			error_string(FileAccess.get_open_error())
@@ -331,6 +332,8 @@ func load_material_mapping(pack_folder: String) -> bool:
 	var parse_result := json.parse(json_text)
 
 	if parse_result != OK:
+		mesh_to_materials = {}
+		material_mapping_available = false
 		printerr("Failed to parse JSON: %s at line %d" % [
 			json.get_error_message(),
 			json.get_error_line()
@@ -339,24 +342,28 @@ func load_material_mapping(pack_folder: String) -> bool:
 
 	var data = json.get_data()
 	if not data is Dictionary:
+		mesh_to_materials = {}
+		material_mapping_available = false
 		printerr("Invalid mapping format: expected Dictionary, got %s" % typeof(data))
 		return false
 
 	mesh_to_materials = data
+	material_mapping_available = true
 	print("  Loaded material mapping with %d mesh entries" % mesh_to_materials.size())
 
 	return true
 
 
-## Recursively finds all FBX files in the given directory.
-## Searches subdirectories and returns paths to all .fbx files found.
+## Recursively finds all model files in the given directory.
+## Searches subdirectories and returns .fbx/.glb files, preferring .glb when
+## both formats exist for the same relative path.
 ## Hidden directories (starting with .) are skipped.
 ## If config_filter_pattern is set, only files containing the pattern are returned.
 ##
 ## @param dir_path Resource path to search (e.g., "res://PackName/models").
-## @returns Array[String] Array of FBX file paths found.
-func find_fbx_files(dir_path: String) -> Array[String]:
-	var result: Array[String] = []
+## @returns Array[String] Array of model file paths found.
+func find_model_files(dir_path: String) -> Array[String]:
+	var selected_files: Dictionary = {}
 	var dir := DirAccess.open(dir_path)
 
 	if dir == null:
@@ -364,7 +371,7 @@ func find_fbx_files(dir_path: String) -> Array[String]:
 			dir_path,
 			error_string(DirAccess.get_open_error())
 		])
-		return result
+		return []
 
 	dir.list_dir_begin()
 	var file_name := dir.get_next()
@@ -376,55 +383,66 @@ func find_fbx_files(dir_path: String) -> Array[String]:
 			# Skip hidden directories
 			if not file_name.begins_with("."):
 				# Recursively search subdirectories
-				result.append_array(find_fbx_files(full_path))
+				for nested_path in find_model_files(full_path):
+					var nested_key := nested_path.get_basename().to_lower()
+					if not selected_files.has(nested_key) or nested_path.to_lower().ends_with(".glb"):
+						selected_files[nested_key] = nested_path
 		else:
-			# Check for FBX files (case-insensitive)
-			if file_name.to_lower().ends_with(".fbx"):
+			var file_name_lower := file_name.to_lower()
+			if file_name_lower.ends_with(".fbx") or file_name_lower.ends_with(".glb"):
 				# Apply filter pattern if set
 				if config_filter_pattern.is_empty():
-					result.append(full_path)
+					var key := full_path.get_basename().to_lower()
+					if not selected_files.has(key) or file_name_lower.ends_with(".glb"):
+						selected_files[key] = full_path
 				else:
 					# Case-insensitive pattern matching
 					var base_name := file_name.get_basename()
 					if base_name.to_lower().contains(config_filter_pattern.to_lower()):
-						result.append(full_path)
+						var key := full_path.get_basename().to_lower()
+						if not selected_files.has(key) or file_name_lower.ends_with(".glb"):
+							selected_files[key] = full_path
 
 		file_name = dir.get_next()
 
 	dir.list_dir_end()
+	var result: Array[String] = []
+	for model_path in selected_files.values():
+		result.append(model_path)
+	result.sort()
 	return result
 
 
-## Processes a single FBX file, extracting meshes based on config.
-## Loads the FBX as a PackedScene, finds all MeshInstance3D nodes,
+## Processes a single model file, extracting meshes based on config.
+## Loads the imported scene as a PackedScene, finds all MeshInstance3D nodes,
 ## and either saves each as individual scene files (default) or keeps
 ## them together in a single scene (when keep_meshes_together is true).
 ##
-## @param fbx_path Resource path to the FBX file (e.g., "res://PackName/models/Props.fbx").
-func process_fbx_file(fbx_path: String) -> void:
-	var fbx_name := fbx_path.get_file().get_basename()
-	print("  Processing: %s" % fbx_path)
+## @param model_path Resource path to the source model file.
+func process_model_file(model_path: String) -> void:
+	var source_name := model_path.get_file().get_basename()
+	print("  Processing: %s" % model_path)
 
 	# Determine relative directory for output (mirror models/ structure in meshes/)
 	var models_prefix := current_pack_folder + "/models/"
-	var relative_path := fbx_path.trim_prefix(models_prefix)
+	var relative_path := model_path.trim_prefix(models_prefix)
 	var relative_dir := relative_path.get_base_dir()
 
 	# If retain_subfolders is disabled (default), flatten the directory structure
 	if not config_retain_subfolders:
 		relative_dir = ""
 
-	# Load the FBX as a PackedScene
-	var packed_scene: PackedScene = load(fbx_path)
+	# Load the imported model as a PackedScene
+	var packed_scene: PackedScene = load(model_path)
 	if packed_scene == null:
-		printerr("    ERROR: Failed to load FBX: %s" % fbx_path)
+		printerr("    ERROR: Failed to load model: %s" % model_path)
 		errors += 1
 		return
 
 	# Instantiate the scene to traverse it
 	var scene_instance: Node = packed_scene.instantiate()
 	if scene_instance == null:
-		printerr("    ERROR: Failed to instantiate scene: %s" % fbx_path)
+		printerr("    ERROR: Failed to instantiate scene: %s" % model_path)
 		errors += 1
 		return
 
@@ -432,19 +450,30 @@ func process_fbx_file(fbx_path: String) -> void:
 	var mesh_instances := find_mesh_instances(scene_instance)
 
 	if mesh_instances.is_empty():
-		print("    No meshes found in FBX")
+		print("    No meshes found in model")
 		scene_instance.free()
+		return
+
+	if not material_mapping_available:
+		printerr("    ERROR: Material mapping is required for mesh-bearing model: %s" % model_path)
+		scene_instance.free()
+		errors += 1
 		return
 
 	print("    Found %d mesh(es)" % mesh_instances.size())
 
+	var is_rigged_model := _scene_has_rigged_content(scene_instance)
+	if is_rigged_model and not config_keep_meshes_together:
+		print("    Rigged model detected; saving combined scene with material overrides")
+		save_fbx_as_single_scene(scene_instance, mesh_instances, relative_dir, source_name, true)
+
 	if config_keep_meshes_together:
 		# Keep all meshes together in a single scene file
-		save_fbx_as_single_scene(scene_instance, mesh_instances, relative_dir, fbx_name)
+		save_fbx_as_single_scene(scene_instance, mesh_instances, relative_dir, source_name)
 	else:
 		# Extract and save each mesh separately (default behavior)
 		for mesh_instance in mesh_instances:
-			extract_and_save_mesh(mesh_instance, relative_dir, fbx_name)
+			extract_and_save_mesh(mesh_instance, relative_dir, source_name)
 
 	# Clean up
 	scene_instance.free()
@@ -458,7 +487,7 @@ func process_fbx_file(fbx_path: String) -> void:
 ## @param mesh_instances Array of all MeshInstance3D nodes to process.
 ## @param relative_dir Subdirectory path relative to meshes/ for output.
 ## @param fbx_name Name of the FBX file (used as scene name).
-func save_fbx_as_single_scene(scene_root: Node, mesh_instances: Array[MeshInstance3D], relative_dir: String, fbx_name: String) -> void:
+func save_fbx_as_single_scene(scene_root: Node, mesh_instances: Array[MeshInstance3D], relative_dir: String, fbx_name: String, force_combined_subfolder := false) -> void:
 	var materials_dir := current_pack_folder + "/materials"
 	var materials_applied := 0
 
@@ -508,14 +537,22 @@ func save_fbx_as_single_scene(scene_root: Node, mesh_instances: Array[MeshInstan
 				materials_applied += 1
 
 	# Determine output path
-	var meshes_dir := current_pack_folder + "/meshes/" + _get_mesh_subfolder()
-	var output_path: String
+	var meshes_dir := current_pack_folder + "/meshes/" + _get_mesh_subfolder(force_combined_subfolder)
 	var file_ext := "." + config_mesh_format
+	var output_path := _build_scene_output_path(meshes_dir, relative_dir, fbx_name, file_ext)
 
-	if relative_dir.is_empty():
-		output_path = "%s/%s%s" % [meshes_dir, fbx_name, file_ext]
-	else:
-		output_path = "%s/%s/%s%s" % [meshes_dir, relative_dir, fbx_name, file_ext]
+	if saved_mesh_names.has(output_path):
+		var duplicate_suffix := relative_dir.replace("/", "_").replace("\\", "_")
+		if duplicate_suffix.is_empty():
+			duplicate_suffix = "duplicate"
+		var unique_name := "%s_%s" % [fbx_name, duplicate_suffix]
+		output_path = _build_scene_output_path(meshes_dir, relative_dir, unique_name, file_ext)
+		var counter := 2
+		while saved_mesh_names.has(output_path):
+			output_path = _build_scene_output_path(meshes_dir, relative_dir, "%s_%d" % [unique_name, counter], file_ext)
+			counter += 1
+		print("      Note: Renamed combined scene to %s (duplicate name)" % output_path.get_file().get_basename())
+		warnings += 1
 
 	# Ensure output directory exists
 	_ensure_directory_exists(output_path.get_base_dir())
@@ -588,6 +625,7 @@ func save_fbx_as_single_scene(scene_root: Node, mesh_instances: Array[MeshInstan
 	print("      Saved combined: %s (%d meshes, %d materials)" % [
 		output_path.get_file(), mesh_instances.size(), materials_applied
 	])
+	saved_mesh_names[output_path] = true
 	meshes_saved += 1
 
 
@@ -1244,9 +1282,26 @@ func _count_keyword_matches(filename: String, keywords: Array) -> int:
 ## Examples: "tscn_separate", "tscn_combined", "res_separate", "res_combined"
 ##
 ## @returns String The subfolder name for mesh output.
-func _get_mesh_subfolder() -> String:
-	var mode := "combined" if config_keep_meshes_together else "separate"
+func _get_mesh_subfolder(force_combined := false) -> String:
+	var mode := "combined" if (config_keep_meshes_together or force_combined) else "separate"
 	return "%s_%s" % [config_mesh_format, mode]
+
+
+func _build_scene_output_path(meshes_dir: String, relative_dir: String, scene_name: String, file_ext: String) -> String:
+	if relative_dir.is_empty():
+		return "%s/%s%s" % [meshes_dir, scene_name, file_ext]
+	return "%s/%s/%s%s" % [meshes_dir, relative_dir, scene_name, file_ext]
+
+
+func _scene_has_rigged_content(scene_root: Node) -> bool:
+	var stack: Array[Node] = [scene_root]
+	while not stack.is_empty():
+		var node: Node = stack.pop_back()
+		if node is Skeleton3D or node is AnimationPlayer:
+			return true
+		for child: Node in node.get_children():
+			stack.append(child)
+	return false
 
 
 ## Ensures a directory exists, creating it recursively if necessary.

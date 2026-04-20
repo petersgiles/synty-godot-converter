@@ -1,6 +1,6 @@
-# Step 10: Copy FBX Files
+# Step 10: Prepare Model Files
 
-This document provides comprehensive documentation for the FBX file copying step of the synty-converter pipeline. FBX copying is implemented in `converter.py` and involves discovering FBX model files from SourceFiles directories and copying them to the output directory.
+This document provides comprehensive documentation for the model preparation step of the synty-converter pipeline. Model preparation is implemented in `converter.py` and involves discovering FBX model files from SourceFiles directories, copying them to the output directory, and optionally exporting selected character/animation assets to GLB via Blender CLI.
 
 **Module Location:** `synty-converter/converter.py`
 
@@ -47,15 +47,16 @@ This document provides comprehensive documentation for the FBX file copying step
 
 ## Overview
 
-Step 10 copies FBX model files from the SourceFiles directory to the output directory. This step prepares the raw 3D models for subsequent Godot import and conversion.
+Step 10 prepares model files from the SourceFiles directory for subsequent Godot import and conversion.
 
 ### Key Responsibilities
 
-1. **Discover FBX files** - Use `rglob("*.fbx")` to find all FBX files recursively
+1. **Discover FBX files** - Use recursive search to find all source FBX files
 2. **Strip common prefixes** - Remove `SourceFiles/`, `FBX/`, `Models/` from paths
 3. **Preserve remaining structure** - Maintain remaining subdirectory hierarchy (Props/, Environment/, Characters/)
-4. **Avoid redundant copies** - Skip files that already exist with matching size
-5. **Support filtering** - Copy only FBX files matching an optional pattern
+4. **Avoid redundant work** - Skip files that already exist with matching content or newer exported GLB output
+5. **Support filtering** - Prepare only FBX files matching an optional pattern
+6. **Optional GLB export** - Route character/animation FBX files through Blender when `--animated-to-glb` is enabled
 
 ### Pipeline Position
 
