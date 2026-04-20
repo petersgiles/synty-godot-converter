@@ -356,17 +356,16 @@ Loads the mesh-to-material mapping dictionary from the pack's `mesh_material_map
 func load_material_mapping(pack_folder: String) -> bool:
     # Per-pack mapping file
     var mapping_path := pack_folder + "/mesh_material_mapping.json"
-
-    if not FileAccess.file_exists(mapping_path):
-        printerr("Material mapping file not found: %s" % mapping_path)
-        return false
+    print("  Loading material mapping: %s" % mapping_path)
 
     var file := FileAccess.open(mapping_path, FileAccess.READ)
     if file == null:
+        mesh_to_materials = {}
         printerr("Failed to open mapping file: %s (error: %s)" % [
             mapping_path,
             error_string(FileAccess.get_open_error())
         ])
+        printerr("  Material assignment requires mesh_material_mapping.json; default fallback was not used")
         return false
 
     var json_text := file.get_as_text()

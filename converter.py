@@ -62,6 +62,9 @@ from material_list import (
 
 logger = logging.getLogger(__name__)
 
+_BINARY_STRING_PATTERN = re.compile(rb"[A-Za-z0-9_./\\:-]{4,}")
+_FBX_TEXTURE_EXTENSIONS = {".png", ".tga", ".jpg", ".jpeg", ".psd", ".tif", ".tiff"}
+
 
 def has_source_assets_recursive(path: Path) -> bool:
     """Check if a path contains any MaterialList, FBX, or Models anywhere in tree.
@@ -2010,6 +2013,136 @@ def filter_textures_for_materials(
     return filtered_textures
 
 
+def _extract_binary_strings(path: Path) -> set[str]:
+    """Extract ASCII-ish strings from a binary file."""
+    try:
+        data = path.read_bytes()
+    except OSError as e:
+        logger.debug("Failed to read binary strings from %s: %s", path, e)
+        return set()
+
+    strings: set[str] = set()
+    for match in _BINARY_STRING_PATTERN.finditer(data):
+        value = match.group().decode("utf-8", errors="ignore")
+        if value:
+            strings.add(value)
+
+    return strings
+
+
+def _extract_texture_names(strings: set[str]) -> set[str]:
+    """Extract texture basenames from string data."""
+    texture_names: set[str] = set()
+
+    for value in strings:
+        normalized = value.replace("\\", "/")
+        suffix = Path(normalized).suffix.lower()
+        if suffix in _FBX_TEXTURE_EXTENSIONS:
+            stem = Path(normalized).stem
+            if stem:
+                texture_names.add(stem)
+
+    return texture_names
+
+
+def _normalize_texture_name(texture_name: str) -> str:
+    """Normalize texture identifiers to a basename without extension."""
+    normalized = texture_name.replace("\\", "/")
+    return Path(normalized).stem
+
+
+def _material_sort_key(mesh_name: str, material_name: str) -> tuple[int, int, int, int, int]:
+    """Ranks fallback material candidates for a mesh name."""
+    mesh_lower = mesh_name.lower()
+    material_lower = material_name.lower()
+
+    mesh_tokens = set(re.split(r"[^a-z0-9]+", mesh_lower)) - {""}
+    material_tokens = set(re.split(r"[^a-z0-9]+", material_lower)) - {""}
+    overlap = len(mesh_tokens & material_tokens)
+
+    exact_match = int(mesh_lower == material_lower)
+    prefix_match = int(mesh_lower.startswith(material_lower) or material_lower.startswith(mesh_lower))
+    generic_bonus = int("glow" not in material_lower and "fx" not in material_lower)
+    numeric_suffix_bonus = int(not re.search(r"\s+\d+$", material_name))
+
+    return (exact_match, prefix_match, overlap, generic_bonus, numeric_suffix_bonus)
+
+
+def build_fallback_mesh_material_map(
+    source_files: Path,
+    mapped_materials: list[MappedMaterial],
+    filter_pattern: str | None = None,
+) -> tuple[dict[str, list[str]], list[str]]:
+    """Infer mesh-material mapping from FBX metadata when MaterialList is missing."""
+    material_names = {mapped_mat.name for mapped_mat in mapped_materials}
+    texture_to_materials: dict[str, set[str]] = {}
+
+    for mapped_mat in mapped_materials:
+        for texture_name in set(mapped_mat.textures.values()):
+            normalized_texture = _normalize_texture_name(texture_name)
+            if normalized_texture:
+                texture_to_materials.setdefault(normalized_texture, set()).add(mapped_mat.name)
+
+    fbx_files = list(source_files.rglob("*.fbx"))
+    if filter_pattern:
+        pattern_lower = filter_pattern.lower()
+        fbx_files = [fbx for fbx in fbx_files if pattern_lower in fbx.stem.lower()]
+
+    mesh_map: dict[str, list[str]] = {}
+    unresolved_meshes: list[str] = []
+
+    for fbx_path in fbx_files:
+        mesh_name = fbx_path.stem
+        strings = _extract_binary_strings(fbx_path)
+        exact_material_hits = sorted(value for value in strings if value in material_names)
+
+        if exact_material_hits:
+            for material_name in exact_material_hits:
+                mesh_map.setdefault(material_name, [material_name])
+
+            if mesh_name in material_names:
+                mesh_map.setdefault(mesh_name, [mesh_name])
+            elif len(exact_material_hits) == 1:
+                mesh_map.setdefault(mesh_name, [exact_material_hits[0]])
+
+            continue
+
+        texture_names = _extract_texture_names(strings)
+        candidate_materials = sorted(
+            {material_name for texture_name in texture_names for material_name in texture_to_materials.get(texture_name, set())}
+        )
+
+        if candidate_materials:
+            chosen_material = max(candidate_materials, key=lambda name: _material_sort_key(mesh_name, name))
+            mesh_map[mesh_name] = [chosen_material]
+            logger.debug(
+                "Fallback mapping inferred %s -> %s from textures %s",
+                mesh_name,
+                chosen_material,
+                sorted(texture_names),
+            )
+            continue
+
+        if mesh_name in material_names:
+            mesh_map[mesh_name] = [mesh_name]
+        else:
+            unresolved_meshes.append(mesh_name)
+
+    return mesh_map, unresolved_meshes
+
+
+def write_mesh_material_mapping_json(
+    mesh_map: dict[str, list[str]],
+    output_path: Path,
+    *,
+    indent: int = 2,
+) -> None:
+    """Write a mesh-to-material mapping JSON file."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as f:
+        json.dump(mesh_map, f, indent=indent, ensure_ascii=False)
+
+
 def run_conversion(config: ConversionConfig) -> ConversionStats:
     """Execute the full conversion pipeline.
 
@@ -2388,45 +2521,81 @@ def run_conversion(config: ConversionConfig) -> ConversionStats:
             # Step 10: Generate mesh_material_mapping.json (uses prefabs parsed in Step 4.5)
             # Note: mapping goes to pack_output_dir so each pack has its own mapping
             logger.info("Step 10: Generating mesh material mapping...")
+            mapping_output = pack_output_dir / "mesh_material_mapping.json"
+            referenced_materials: set[str] = set()
+
             if prefabs:
-                mapping_output = pack_output_dir / "mesh_material_mapping.json"
                 if config.dry_run:
                     logger.debug("[DRY RUN] Would write mesh_material_mapping.json")
                 else:
                     generate_mesh_material_mapping_json(prefabs, mapping_output)
                     logger.debug("Generated mesh_material_mapping.json to pack folder")
 
-                # Check for missing material references (no placeholders - just warn)
-                if not config.dry_run:
-                    logger.debug("Checking for missing material references...")
-                    materials_dir = pack_output_dir / "materials"
-                    existing_materials = {f.stem for f in materials_dir.glob("*.tres")}
-
-                    # Collect all referenced materials from prefabs
-                    referenced_materials: set[str] = set()
-                    for prefab in prefabs:
-                        for mesh in prefab.meshes:
-                            for slot in mesh.slots:
-                                if slot.material_name:
-                                    referenced_materials.add(slot.material_name)
-
-                    # Find missing materials - just warn, don't create placeholders
-                    missing_materials = referenced_materials - existing_materials
-                    stats.materials_missing = len(missing_materials)
-
-                    if missing_materials:
-                        logger.debug(
-                            "Found %d missing material(s) - these meshes will use default materials:",
-                            len(missing_materials)
-                        )
-                        for mat_name in sorted(missing_materials):
-                            logger.debug("  Missing: %s", mat_name)
-                    else:
-                        logger.debug("All referenced materials exist")
-                else:
-                    logger.debug("Skipping missing materials check (dry run)")
+                for prefab in prefabs:
+                    for mesh in prefab.meshes:
+                        for slot in mesh.slots:
+                            if slot.material_name:
+                                referenced_materials.add(slot.material_name)
             else:
-                logger.debug("No MaterialList data available, skipping mesh-material mapping")
+                logger.info("No MaterialList data available - inferring mesh-material mapping from FBX metadata")
+                fallback_mesh_map, unresolved_meshes = build_fallback_mesh_material_map(
+                    config.source_files,
+                    mapped_materials,
+                    config.filter_pattern,
+                )
+
+                referenced_materials = {
+                    material_name
+                    for material_names in fallback_mesh_map.values()
+                    for material_name in material_names
+                    if material_name
+                }
+
+                if config.dry_run:
+                    logger.debug(
+                        "[DRY RUN] Would write fallback mesh_material_mapping.json with %d mesh entries",
+                        len(fallback_mesh_map),
+                    )
+                elif fallback_mesh_map:
+                    write_mesh_material_mapping_json(fallback_mesh_map, mapping_output)
+                    logger.debug(
+                        "Generated fallback mesh_material_mapping.json with %d mesh entries",
+                        len(fallback_mesh_map),
+                    )
+                else:
+                    logger.debug("Fallback mapping could not infer any mesh-material relationships")
+
+                if unresolved_meshes:
+                    logger.debug(
+                        "Fallback mapping could not infer materials for %d mesh(es)",
+                        len(unresolved_meshes),
+                    )
+                    for mesh_name in unresolved_meshes[:20]:
+                        logger.debug("  Unresolved: %s", mesh_name)
+
+            # Check for missing material references (no placeholders - just warn)
+            if referenced_materials and not config.dry_run:
+                logger.debug("Checking for missing material references...")
+                materials_dir = pack_output_dir / "materials"
+                existing_materials = {f.stem for f in materials_dir.glob("*.tres")}
+
+                # Find missing materials - just warn, don't create placeholders
+                missing_materials = referenced_materials - existing_materials
+                stats.materials_missing = len(missing_materials)
+
+                if missing_materials:
+                    logger.debug(
+                        "Found %d missing material(s) - these meshes will use default materials:",
+                        len(missing_materials)
+                    )
+                    for mat_name in sorted(missing_materials):
+                        logger.debug("  Missing: %s", mat_name)
+                else:
+                    logger.debug("All referenced materials exist")
+            elif referenced_materials:
+                logger.debug("Skipping missing materials check (dry run)")
+            else:
+                logger.debug("No referenced materials available for mapping validation")
 
         # Step 11: Generate or update project.godot
         logger.info("Step 11: Generating project.godot...")

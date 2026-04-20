@@ -53,6 +53,8 @@ This document provides comprehensive documentation for the generation of `mesh_m
 
 The `mesh_material_mapping.json` file is a critical intermediate artifact that bridges the Python material parsing phase with the Godot CLI mesh conversion phase. It provides a simple lookup table mapping mesh names to their material assignments, enabling the GDScript converter to apply the correct `.tres` materials to each mesh surface.
 
+When `MaterialList*.txt` is available, the mapping is generated from Synty's explicit mesh-slot data. When it is missing, the converter falls back to FBX metadata, using exact material-name strings first and texture-reference matching second.
+
 ### Why This File Exists
 
 The conversion pipeline operates in two distinct phases:

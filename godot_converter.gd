@@ -312,17 +312,16 @@ func process_pack_folder(pack_folder: String) -> void:
 ## @returns bool True if loading succeeded, false otherwise.
 func load_material_mapping(pack_folder: String) -> bool:
 	var mapping_path := pack_folder + "/mesh_material_mapping.json"
-
-	if not FileAccess.file_exists(mapping_path):
-		printerr("Material mapping file not found: %s" % mapping_path)
-		return false
+	print("  Loading material mapping: %s" % mapping_path)
 
 	var file := FileAccess.open(mapping_path, FileAccess.READ)
 	if file == null:
+		mesh_to_materials = {}
 		printerr("Failed to open mapping file: %s (error: %s)" % [
 			mapping_path,
 			error_string(FileAccess.get_open_error())
 		])
+		printerr("  Material assignment requires mesh_material_mapping.json; default fallback was not used")
 		return false
 
 	var json_text := file.get_as_text()
@@ -486,7 +485,7 @@ func save_fbx_as_single_scene(scene_root: Node, mesh_instances: Array[MeshInstan
 			continue
 
 		# Get materials for this mesh
-		var material_names := get_material_names_for_mesh(mesh_name)
+		var material_names := get_material_names_for_mesh(mesh_name, fbx_name)
 
 		# Apply materials as overrides
 		for i in range(original_mesh.get_surface_count()):
@@ -699,7 +698,7 @@ func extract_and_save_mesh(mesh_instance: MeshInstance3D, relative_dir: String, 
 		return  # Skip normal material lookup
 
 	# Get materials for this mesh (loaded as external resources)
-	var material_names := get_material_names_for_mesh(mesh_name)
+	var material_names := get_material_names_for_mesh(mesh_name, fbx_name)
 	var materials_applied := 0
 
 	# Apply materials as overrides (references to external .tres files, not baked in)
@@ -799,41 +798,25 @@ func extract_and_save_mesh(mesh_instance: MeshInstance3D, relative_dir: String, 
 ## @param mesh_name The mesh name to look up (e.g., "SM_Prop_Crystal_01_001").
 ## @returns Array[String] Material names for each surface. May contain empty strings
 ##          for surfaces with no material mapping. Empty array if mesh not found.
-func get_material_names_for_mesh(mesh_name: String) -> Array[String]:
+func get_material_names_for_mesh(mesh_name: String, fallback_name: String = "") -> Array[String]:
 	var material_names_result: Array[String] = []
-	var lookup_name := mesh_name
+	var lookup_name := _resolve_mapping_name(mesh_name)
 
-	# Try exact match first
-	if not mesh_to_materials.has(lookup_name):
-		# Generate all possible name variations and try each
-		var variations := _generate_name_variations(mesh_name)
-		var found := false
+	if lookup_name.is_empty() and not fallback_name.is_empty():
+		lookup_name = _resolve_mapping_name(fallback_name)
+		if not lookup_name.is_empty():
+			print("      FBX fallback: '%s' -> '%s'" % [mesh_name, lookup_name])
 
-		for variation in variations:
-			if mesh_to_materials.has(variation):
-				print("      Fallback: '%s' -> '%s'" % [mesh_name, variation])
-				lookup_name = variation
-				found = true
-				break
-
-		if not found:
-			# Last resort: fuzzy matching (Levenshtein distance <= 2)
-			var fuzzy_match := _try_fuzzy_match(mesh_name, 2)
-			if not fuzzy_match.is_empty():
-				print("      Fuzzy match: '%s' -> '%s'" % [mesh_name, fuzzy_match])
-				lookup_name = fuzzy_match
-				found = true
-
-		if not found:
-			# Final fallback: use default material if available
-			if not default_material_name.is_empty():
-				print("      Using default material for mesh '%s': %s" % [mesh_name, default_material_name])
-				material_names_result.append(default_material_name)
-				return material_names_result
-			else:
-				print("      Warning: No material mapping for mesh '%s'" % mesh_name)
-				warnings += 1
-				return material_names_result
+	if lookup_name.is_empty():
+		# Final fallback: use default material if available
+		if not default_material_name.is_empty():
+			print("      Using default material for mesh '%s': %s" % [mesh_name, default_material_name])
+			material_names_result.append(default_material_name)
+			return material_names_result
+		else:
+			print("      Warning: No material mapping for mesh '%s'" % mesh_name)
+			warnings += 1
+			return material_names_result
 
 	var material_names = mesh_to_materials[lookup_name]
 
@@ -855,6 +838,24 @@ func get_material_names_for_mesh(mesh_name: String) -> Array[String]:
 			material_names_result.append("")
 
 	return material_names_result
+
+
+func _resolve_mapping_name(mesh_name: String) -> String:
+	if mesh_to_materials.has(mesh_name):
+		return mesh_name
+
+	var variations := _generate_name_variations(mesh_name)
+	for variation in variations:
+		if mesh_to_materials.has(variation):
+			print("      Fallback: '%s' -> '%s'" % [mesh_name, variation])
+			return variation
+
+	var fuzzy_match := _try_fuzzy_match(mesh_name, 2)
+	if not fuzzy_match.is_empty():
+		print("      Fuzzy match: '%s' -> '%s'" % [mesh_name, fuzzy_match])
+		return fuzzy_match
+
+	return ""
 
 
 ## Generates all possible name variations for fallback matching.

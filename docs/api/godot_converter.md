@@ -263,7 +263,8 @@ Parses the `mesh_material_mapping.json` file for a specific pack folder.
 
 **Behavior:**
 - Loads the per-pack material mapping file
-- Validates file exists
+- Logs the mapping path being loaded
+- Opens the file directly instead of pre-checking `res://` existence
 - Parses JSON content
 - Validates data is a Dictionary
 - Populates `mesh_to_materials` class variable
