@@ -49,18 +49,29 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-# Local imports
-from unity_package import extract_unitypackage, GuidMap, get_material_guids, get_material_name
-from unity_parser import parse_material_bytes, UnityMaterial
-from shader_mapping import map_material, detect_shader_type, determine_shader, MappedMaterial
-from tres_generator import generate_tres, write_tres_file, sanitize_filename
 from material_list import (
-    parse_material_list,
-    generate_mesh_material_mapping_json,
-    get_mesh_to_materials_map,
-    get_custom_shader_materials,
     PrefabMaterials,
+    generate_mesh_material_mapping_json,
+    get_custom_shader_materials,
+    get_mesh_to_materials_map,
+    parse_material_list,
 )
+from shader_mapping import (
+    MappedMaterial,
+    detect_shader_type,
+    determine_shader,
+    map_material,
+)
+from tres_generator import generate_tres, sanitize_filename, write_tres_file
+
+# Local imports
+from unity_package import (
+    GuidMap,
+    extract_unitypackage,
+    get_material_guids,
+    get_material_name,
+)
+from unity_parser import UnityMaterial, parse_material_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -148,11 +159,11 @@ TEXTURE_EXTENSIONS = [".png", ".tga", ".jpg", ".jpeg", ".PNG", ".TGA", ".JPG", "
 # Patterns for finding the pack's main texture atlas (fallback for missing generic textures)
 # Order matters - first match wins. Prefer "Polygon" prefixed textures as they're the main atlas.
 FALLBACK_TEXTURE_PATTERNS = [
-    "Polygon*_Texture_01.png",     # Most common: PolygonNature_Texture_01.png
-    "Polygon*_Texture_01_A.png",   # Some packs use _A suffix
-    "POLYGON*_Texture_01.png",     # Uppercase variant
-    "*_Texture_01_A.png",          # Fallback: any pack with _A suffix
-    "Texture_01.png",              # Simple naming
+    "Polygon*_Texture_01.png",  # Most common: PolygonNature_Texture_01.png
+    "Polygon*_Texture_01_A.png",  # Some packs use _A suffix
+    "POLYGON*_Texture_01.png",  # Uppercase variant
+    "*_Texture_01_A.png",  # Fallback: any pack with _A suffix
+    "Texture_01.png",  # Simple naming
 ]
 
 # Template for .import sidecar files for textures
@@ -304,14 +315,14 @@ def extract_pack_name_from_package(unity_package_path: Path) -> str:
 
     # Pattern to match "_Unity_YYYY_V" suffix (e.g., "_Unity_2022_3")
     # This captures everything before the Unity version marker
-    unity_pattern = re.compile(r'^(.+?)_Unity_\d{4}_\d+.*$', re.IGNORECASE)
+    unity_pattern = re.compile(r"^(.+?)_Unity_\d{4}_\d+.*$", re.IGNORECASE)
     match = unity_pattern.match(filename)
 
     if match:
         return match.group(1)
 
     # Fallback: try to remove common version patterns like "_vX_Y_Z" or "_v1.0"
-    version_pattern = re.compile(r'^(.+?)_v\d+[._]\d+.*$', re.IGNORECASE)
+    version_pattern = re.compile(r"^(.+?)_v\d+[._]\d+.*$", re.IGNORECASE)
     match = version_pattern.match(filename)
 
     if match:
@@ -562,8 +573,8 @@ Examples:
         "--skip-godot-import",
         action="store_true",
         help="Skip Godot's headless import step (useful for large projects that timeout). "
-             "The GDScript converter will still run. You'll need to open the project in "
-             "Godot manually to trigger asset import before running the converter.",
+        "The GDScript converter will still run. You'll need to open the project in "
+        "Godot manually to trigger asset import before running the converter.",
     )
     parser.add_argument(
         "--godot-timeout",
@@ -575,7 +586,7 @@ Examples:
         "--keep-meshes-together",
         action="store_true",
         help="Keep all meshes from one FBX together in a single scene file "
-             "(default: each mesh saved as separate .tscn)",
+        "(default: each mesh saved as separate .tscn)",
     )
     parser.add_argument(
         "--mesh-format",
@@ -588,13 +599,13 @@ Examples:
         type=str,
         default=None,
         help="Filter pattern for FBX filenames (case-insensitive). "
-             "Example: --filter Tree only converts FBX files containing 'Tree'",
+        "Example: --filter Tree only converts FBX files containing 'Tree'",
     )
     parser.add_argument(
         "--high-quality-textures",
         action="store_true",
         help="Use BPTC compression for textures (slower import, higher quality). "
-             "Default is lossless compression for faster Godot import times.",
+        "Default is lossless compression for faster Godot import times.",
     )
     parser.add_argument(
         "--mesh-scale",
@@ -607,13 +618,13 @@ Examples:
         type=str,
         default=None,
         help="Subfolder path to prepend to pack folder names. "
-             "Example: --output-subfolder synty/ creates packs at output/synty/POLYGON_PackName/",
+        "Example: --output-subfolder synty/ creates packs at output/synty/POLYGON_PackName/",
     )
     parser.add_argument(
         "--retain-subfolders",
         action="store_true",
         help="Retain Source_Files/FBX/ subdirectory structure in mesh output. "
-             "By default, paths are flattened and all meshes go directly to meshes/tscn_separate/.",
+        "By default, paths are flattened and all meshes go directly to meshes/tscn_separate/.",
     )
     parser.add_argument(
         "--blender",
@@ -655,7 +666,7 @@ Examples:
             logger.debug(
                 "No Textures directory found in %s or its subdirectories. "
                 "Textures will be extracted from .unitypackage only.",
-                resolved_source_files
+                resolved_source_files,
             )
 
     if not args.godot.exists():
@@ -667,7 +678,9 @@ Examples:
             parser.error(f"Blender executable not found: {args.blender}")
         resolved_blender = resolve_blender_executable(args.blender)
         if resolved_blender is None:
-            parser.error("--animated-to-glb requires Blender. Pass --blender PATH or install blender on PATH.")
+            parser.error(
+                "--animated-to-glb requires Blender. Pass --blender PATH or install blender on PATH."
+            )
 
     return ConversionConfig(
         unity_package=args.unity_package.resolve(),
@@ -702,12 +715,24 @@ def detect_existing_pack(pack_output_dir: Path) -> dict:
     - has_mapping: True if mesh_material_mapping.json exists
     """
     return {
-        "has_materials": bool(list((pack_output_dir / "materials").glob("*.tres"))) if (pack_output_dir / "materials").exists() else False,
-        "has_textures": bool(list((pack_output_dir / "textures").glob("*.*"))) if (pack_output_dir / "textures").exists() else False,
+        "has_materials": (
+            bool(list((pack_output_dir / "materials").glob("*.tres")))
+            if (pack_output_dir / "materials").exists()
+            else False
+        ),
+        "has_textures": (
+            bool(list((pack_output_dir / "textures").glob("*.*")))
+            if (pack_output_dir / "textures").exists()
+            else False
+        ),
         "has_models": (
-            bool(list((pack_output_dir / "models").rglob("*.fbx")))
-            or bool(list((pack_output_dir / "models").rglob("*.glb")))
-        ) if (pack_output_dir / "models").exists() else False,
+            (
+                bool(list((pack_output_dir / "models").rglob("*.fbx")))
+                or bool(list((pack_output_dir / "models").rglob("*.glb")))
+            )
+            if (pack_output_dir / "models").exists()
+            else False
+        ),
         "has_mapping": (pack_output_dir / "mesh_material_mapping.json").exists(),
     }
 
@@ -765,9 +790,7 @@ def find_shader_in_project(shader_name: str, project_dir: Path) -> Path | None:
 
 
 def get_shader_paths(
-    project_dir: Path,
-    shaders_src: Path,
-    dry_run: bool = False
+    project_dir: Path, shaders_src: Path, dry_run: bool = False
 ) -> tuple[dict[str, str], int]:
     """Build map of shader filename to res:// path. Copy missing shaders to shaders/.
 
@@ -797,7 +820,11 @@ def get_shader_paths(
             # Use existing location
             rel_path = found.relative_to(project_dir)
             shader_paths[shader_file] = "res://" + str(rel_path).replace("\\", "/")
-            logger.debug("Found existing shader: %s at %s", shader_file, shader_paths[shader_file])
+            logger.debug(
+                "Found existing shader: %s at %s",
+                shader_file,
+                shader_paths[shader_file],
+            )
         else:
             # Copy to shaders/ and use that path
             src = shaders_src / shader_file
@@ -815,7 +842,9 @@ def get_shader_paths(
 
             shader_paths[shader_file] = f"res://shaders/{shader_file}"
 
-    logger.debug("Resolved shader paths: %d found, %d copied", len(shader_paths) - copied, copied)
+    logger.debug(
+        "Resolved shader paths: %d found, %d copied", len(shader_paths) - copied, copied
+    )
     return shader_paths, copied
 
 
@@ -857,7 +886,9 @@ def copy_shaders(shaders_dest: Path, dry_run: bool) -> int:
             continue
 
         if dry_run:
-            logger.debug("[DRY RUN] Would copy shader: %s -> %s", source_path, dest_path)
+            logger.debug(
+                "[DRY RUN] Would copy shader: %s -> %s", source_path, dest_path
+            )
         else:
             shutil.copy2(source_path, dest_path)
             logger.debug("Copied shader: %s", shader_file)
@@ -928,7 +959,7 @@ def find_texture_file(
     base_name = texture_name
     for ext in TEXTURE_EXTENSIONS:
         if texture_name.lower().endswith(ext.lower()):
-            base_name = texture_name[:-len(ext)]
+            base_name = texture_name[: -len(ext)]
             break
 
     # Build list of name variations to try
@@ -937,7 +968,7 @@ def find_texture_file(
     name_variations = [base_name]
 
     # Try inserting "_Texture" before numbered suffixes like "_01_A", "_02_B", etc.
-    match = re.match(r'^(.+?)(_\d+_[A-Za-z]+(?:_\w+)?)$', base_name)
+    match = re.match(r"^(.+?)(_\d+_[A-Za-z]+(?:_\w+)?)$", base_name)
     if match:
         prefix, suffix = match.groups()
         name_variations.append(f"{prefix}_Texture{suffix}")
@@ -976,7 +1007,9 @@ def find_texture_file(
     return None
 
 
-def generate_texture_import_file(texture_path: Path, high_quality: bool = False) -> None:
+def generate_texture_import_file(
+    texture_path: Path, high_quality: bool = False
+) -> None:
     """Generate a .import sidecar file for a texture with compression settings.
 
     Creates a Godot .import file that configures the texture compression mode.
@@ -1014,7 +1047,11 @@ def generate_texture_import_file(texture_path: Path, high_quality: bool = False)
     uid = "".join(random.choice(uid_chars) for _ in range(5 + random.randint(0, 8)))
 
     # Select template based on quality setting
-    template = TEXTURE_IMPORT_TEMPLATE_HIGH_QUALITY if high_quality else TEXTURE_IMPORT_TEMPLATE_LOSSLESS
+    template = (
+        TEXTURE_IMPORT_TEMPLATE_HIGH_QUALITY
+        if high_quality
+        else TEXTURE_IMPORT_TEMPLATE_LOSSLESS
+    )
 
     # Format the template
     import_content = template.format(
@@ -1127,7 +1164,9 @@ def copy_textures(
             continue
 
         # Fall back to SourceFiles search (including additional directories)
-        source_path = find_texture_file(source_textures, texture_name, additional_texture_dirs)
+        source_path = find_texture_file(
+            source_textures, texture_name, additional_texture_dirs
+        )
 
         if source_path is None:
             # Texture not found - try fallback
@@ -1137,7 +1176,7 @@ def copy_textures(
                 base_name = texture_name
                 for ext in TEXTURE_EXTENSIONS:
                     if texture_name.lower().endswith(ext.lower()):
-                        base_name = texture_name[:-len(ext)]
+                        base_name = texture_name[: -len(ext)]
                         break
 
                 # Use fallback's extension
@@ -1147,19 +1186,25 @@ def copy_textures(
                 if dry_run:
                     logger.debug(
                         "[DRY RUN] Would copy fallback texture: %s -> %s (for missing %s)",
-                        fallback_texture.name, dest_name, texture_name
+                        fallback_texture.name,
+                        dest_name,
+                        texture_name,
                     )
                 else:
                     shutil.copy2(fallback_texture, dest_path)
                     generate_texture_import_file(dest_path, high_quality_textures)
                     logger.debug(
                         "Copied fallback texture: %s -> %s (for missing %s)",
-                        fallback_texture.name, dest_name, texture_name
+                        fallback_texture.name,
+                        dest_name,
+                        texture_name,
                     )
 
                 fallback_count += 1
             else:
-                logger.warning("Texture not found in package or SourceFiles: %s", texture_name)
+                logger.warning(
+                    "Texture not found in package or SourceFiles: %s", texture_name
+                )
                 missing += 1
             continue
 
@@ -1169,18 +1214,22 @@ def copy_textures(
         base_name = texture_name
         for ext in TEXTURE_EXTENSIONS:
             if texture_name.lower().endswith(ext.lower()):
-                base_name = texture_name[:-len(ext)]
+                base_name = texture_name[: -len(ext)]
                 break
         dest_name = base_name + source_path.suffix
         dest_path = output_textures / dest_name
 
         if dry_run:
-            logger.debug("[DRY RUN] Would copy texture: %s -> %s", source_path.name, dest_name)
+            logger.debug(
+                "[DRY RUN] Would copy texture: %s -> %s", source_path.name, dest_name
+            )
         else:
             shutil.copy2(source_path, dest_path)
             generate_texture_import_file(dest_path, high_quality_textures)
             if source_path.name != dest_name:
-                logger.debug("Copied texture: %s -> %s (renamed)", source_path.name, dest_name)
+                logger.debug(
+                    "Copied texture: %s -> %s (renamed)", source_path.name, dest_name
+                )
             else:
                 logger.debug("Copied texture: %s", source_path.name)
 
@@ -1191,12 +1240,18 @@ def copy_textures(
     if from_temp > 0 or from_source > 0:
         logger.debug(
             "Copied %d textures (%d from package, %d from SourceFiles), %d fallback, %d missing",
-            copied, from_temp, from_source, fallback_count, missing
+            copied,
+            from_temp,
+            from_source,
+            fallback_count,
+            missing,
         )
     elif fallback_count > 0:
         logger.debug(
             "Copied %d textures, %d using fallback atlas, %d missing",
-            copied, fallback_count, missing
+            copied,
+            fallback_count,
+            missing,
         )
     else:
         logger.debug("Copied %d textures, %d missing", copied, missing)
@@ -1279,7 +1334,9 @@ def copy_fbx_files(
         fbx_files = [(f, d) for f, d in fbx_files if pattern_lower in f.stem.lower()]
         logger.debug(
             "Filter '%s' matched %d of %d FBX files",
-            filter_pattern, len(fbx_files), original_count
+            filter_pattern,
+            len(fbx_files),
+            original_count,
         )
 
     if not fbx_files:
@@ -1354,7 +1411,10 @@ def find_source_fbx_files(
 
 def should_convert_fbx_to_glb(source_path: Path) -> bool:
     """Return True for the conservative first-pass animated/skinned GLB targets."""
-    name_parts = [source_path.stem.lower(), *(part.lower() for part in source_path.parts)]
+    name_parts = [
+        source_path.stem.lower(),
+        *(part.lower() for part in source_path.parts),
+    ]
     return any(hint in part for hint in _ANIMATED_MODEL_HINTS for part in name_parts)
 
 
@@ -1362,7 +1422,14 @@ def get_clean_model_relative_path(source_path: Path, base_dir: Path) -> Path:
     """Strip common SourceFiles/FBX wrapper prefixes from model paths."""
     relative_path = source_path.relative_to(base_dir)
     path_parts = list(relative_path.parts)
-    common_prefixes = {"sourcefiles", "source_files", "source files", "fbx", "models", "bonusfbx"}
+    common_prefixes = {
+        "sourcefiles",
+        "source_files",
+        "source files",
+        "fbx",
+        "models",
+        "bonusfbx",
+    }
 
     while path_parts and path_parts[0].lower() in common_prefixes:
         path_parts.pop(0)
@@ -1370,6 +1437,126 @@ def get_clean_model_relative_path(source_path: Path, base_dir: Path) -> Path:
     if path_parts:
         return Path(*path_parts)
     return Path(relative_path.name)
+
+
+def _is_character_model_path(relative_path: Path) -> bool:
+    """Return True when a model path likely represents character content."""
+    lower_parts = [part.lower() for part in relative_path.parts]
+    lower_stem = relative_path.stem.lower()
+    hints = (
+        "character",
+        "characters",
+        "char",
+        "chr",
+        "npc",
+        "humanoid",
+        "barkeep",
+        "barkeep",
+        "villager",
+        "merchant",
+    )
+
+    if any(hint in lower_stem for hint in hints):
+        return True
+
+    return any(any(hint in part for hint in hints) for part in lower_parts)
+
+
+def _normalize_unity_model_scale(raw_scale: float, relative_path: Path) -> float:
+    """Apply per-type normalization to Unity metadata scale overrides.
+
+    Some Synty non-character FBXs carry Unity metadata scales of 100.0 that
+    should be interpreted as 10.0 in this converter workflow. Character assets
+    are intentionally left unchanged.
+    """
+    if raw_scale <= 0:
+        return raw_scale
+
+    if raw_scale >= 10.0 and not _is_character_model_path(relative_path):
+        adjusted_scale = raw_scale * 0.1
+        logger.debug(
+            "Normalized non-character Unity scale for %s: %s -> %s",
+            relative_path,
+            raw_scale,
+            adjusted_scale,
+        )
+        return adjusted_scale
+
+    return raw_scale
+
+
+def build_unity_model_scale_overrides(
+    guid_map: GuidMap,
+    source_models: list[tuple[Path, Path]],
+    animated_to_glb: bool = False,
+) -> dict[str, float]:
+    """Build per-model scale overrides keyed by output models/ relative path.
+
+    Unity stores FBX Scale Factor in `asset.meta` as `globalScale`. This maps
+    those values onto the relative model paths used inside Godot's `models/`
+    directory, so conversion can mirror Unity's per-file scaling behavior.
+
+    Args:
+        guid_map: Extracted Unity package mappings including model_path_to_scale.
+        source_models: Sequence of (source_fbx_path, base_dir) pairs.
+        animated_to_glb: If True, keys for GLB-converted targets use .glb suffix.
+
+    Returns:
+        Dictionary keyed by lowercase relative path (e.g.,
+        "characters/sf_chr_barkeeper_01.fbx") with positive scale values.
+    """
+    if not guid_map.model_path_to_scale or not source_models:
+        return {}
+
+    unity_scales_by_name: dict[str, set[float]] = {}
+    unity_scales_by_suffix: dict[str, float] = {}
+
+    for unity_path, scale in guid_map.model_path_to_scale.items():
+        normalized = unity_path.replace("\\", "/").lower()
+        unity_scales_by_suffix[normalized] = scale
+        unity_scales_by_name.setdefault(Path(normalized).name, set()).add(scale)
+
+    overrides: dict[str, float] = {}
+
+    for source_path, base_dir in source_models:
+        relative_path = get_clean_model_relative_path(source_path, base_dir)
+        output_relative = (
+            relative_path.with_suffix(".glb")
+            if (animated_to_glb and should_convert_fbx_to_glb(source_path))
+            else relative_path
+        )
+        key = output_relative.as_posix().lower()
+
+        source_normalized = source_path.as_posix().lower()
+        relative_normalized = relative_path.as_posix().lower()
+
+        matched_scale: float | None = None
+        for unity_suffix, unity_scale in unity_scales_by_suffix.items():
+            if source_normalized.endswith(unity_suffix) or unity_suffix.endswith(
+                relative_normalized
+            ):
+                matched_scale = unity_scale
+                break
+
+        if matched_scale is None:
+            name_matches = unity_scales_by_name.get(relative_path.name.lower(), set())
+            if len(name_matches) == 1:
+                matched_scale = next(iter(name_matches))
+            elif len(name_matches) > 1:
+                logger.debug(
+                    "Skipping ambiguous Unity scale for %s (candidates: %s)",
+                    relative_path,
+                    sorted(name_matches),
+                )
+
+        if matched_scale is not None and matched_scale > 0:
+            normalized_scale = _normalize_unity_model_scale(
+                matched_scale, relative_path
+            )
+            if normalized_scale > 0:
+                overrides[key] = normalized_scale
+
+    return overrides
 
 
 def export_fbx_to_glb(
@@ -1390,7 +1577,10 @@ def export_fbx_to_glb(
                 output_glb_path.stat().st_size > 0
                 and output_glb_path.stat().st_mtime >= source_path.stat().st_mtime
             ):
-                logger.debug("Skipping existing GLB: %s", output_glb_path.relative_to(output_glb_path.parents[1]))
+                logger.debug(
+                    "Skipping existing GLB: %s",
+                    output_glb_path.relative_to(output_glb_path.parents[1]),
+                )
                 return False, True
         except OSError:
             pass
@@ -1412,7 +1602,11 @@ def export_fbx_to_glb(
             "--",
             str(source_path),
             str(output_glb_path),
-            *( [str(material_manifest_path)] if material_manifest_path is not None else [] ),
+            *(
+                [str(material_manifest_path)]
+                if material_manifest_path is not None
+                else []
+            ),
         ],
         capture_output=True,
         text=True,
@@ -1445,7 +1639,9 @@ def prepare_model_assets(
     textures_dir: Path | None = None,
 ) -> tuple[int, int]:
     """Prepare model assets in output/models, exporting selected FBXs to GLB."""
-    fbx_files = find_source_fbx_files(source_fbx_dir, filter_pattern, additional_fbx_dirs)
+    fbx_files = find_source_fbx_files(
+        source_fbx_dir, filter_pattern, additional_fbx_dirs
+    )
     if not fbx_files:
         return 0, 0
 
@@ -1459,11 +1655,18 @@ def prepare_model_assets(
 
         if convert_to_glb:
             if blender_exe is None:
-                raise RuntimeError("Animated GLB export requested without Blender configured")
+                raise RuntimeError(
+                    "Animated GLB export requested without Blender configured"
+                )
             glb_targets += 1
             dest_path = (output_models_dir / relative_path).with_suffix(".glb")
             material_manifest_path = None
-            if mesh_material_map is not None and mapped_materials is not None and textures_dir is not None and not dry_run:
+            if (
+                mesh_material_map is not None
+                and mapped_materials is not None
+                and textures_dir is not None
+                and not dry_run
+            ):
                 material_manifest_path = write_glb_material_manifest(
                     mesh_material_map,
                     mapped_materials,
@@ -1500,7 +1703,12 @@ def prepare_model_assets(
             prepared += 1
 
     if animated_to_glb:
-        logger.debug("Prepared %d model files (%d GLB targets), skipped %d existing", prepared, glb_targets, skipped)
+        logger.debug(
+            "Prepared %d model files (%d GLB targets), skipped %d existing",
+            prepared,
+            glb_targets,
+            skipped,
+        )
     else:
         logger.debug("Prepared %d FBX files, skipped %d existing", prepared, skipped)
 
@@ -1619,6 +1827,7 @@ def generate_converter_config(
     mesh_format: str,
     filter_pattern: str | None,
     mesh_scale: float,
+    model_scale_overrides: dict[str, float],
     output_subfolder: str | None,
     flatten_output: bool,
     dry_run: bool,
@@ -1639,6 +1848,8 @@ def generate_converter_config(
         mesh_format: Output format - 'tscn' (text) or 'res' (binary).
         filter_pattern: Optional filter pattern for FBX filenames.
         mesh_scale: Scale factor for mesh vertices.
+        model_scale_overrides: Per-model scale overrides derived from Unity
+            ModelImporter.globalScale metadata.
         output_subfolder: Optional subfolder path prepended to pack folder names.
         flatten_output: If True, skip mirroring source directory structure.
         dry_run: If True, only log what would be written.
@@ -1649,6 +1860,7 @@ def generate_converter_config(
         "mesh_format": mesh_format,
         "filter_pattern": filter_pattern,
         "mesh_scale": mesh_scale,
+        "model_scale_overrides": model_scale_overrides,
         "output_subfolder": output_subfolder,
         "flatten_output": flatten_output,
     }
@@ -1672,6 +1884,7 @@ def run_godot_cli(
     mesh_format: str = "tscn",
     filter_pattern: str | None = None,
     mesh_scale: float = 1.0,
+    model_scale_overrides: dict[str, float] | None = None,
     pack_name: str = "",
     output_subfolder: str | None = None,
     flatten_output: bool = True,
@@ -1768,6 +1981,7 @@ def run_godot_cli(
         mesh_format,
         filter_pattern,
         mesh_scale,
+        model_scale_overrides or {},
         output_subfolder,
         flatten_output,
         dry_run,
@@ -1780,14 +1994,17 @@ def run_godot_cli(
     # Phase 1: Import (can be skipped for large projects that timeout)
     if skip_import:
         logger.debug("Skipping Godot import phase (--skip-godot-import)")
-        logger.debug("Note: You must open the project in Godot manually to trigger asset import")
+        logger.debug(
+            "Note: You must open the project in Godot manually to trigger asset import"
+        )
         import_success = True  # Treat as success so converter phase runs
     else:
         import_cmd = [
             str(godot_exe),
             "--headless",
             "--import",
-            "--path", str(project_dir),
+            "--path",
+            str(project_dir),
         ]
 
         if dry_run:
@@ -1834,7 +2051,9 @@ def run_godot_cli(
                         logger.debug("Godot import completed in %.1fs", elapsed)
                         import_success = True
                     else:
-                        logger.error("Godot import failed (exit code %d)", process.returncode)
+                        logger.error(
+                            "Godot import failed (exit code %d)", process.returncode
+                        )
                 except subprocess.TimeoutExpired:
                     process.kill()
                     logger.error("Godot import timed out after %ds", timeout_seconds)
@@ -1855,15 +2074,19 @@ def run_godot_cli(
     convert_cmd = [
         str(godot_exe),
         "--headless",
-        "--script", "res://godot_converter.gd",
-        "--path", str(project_dir),
+        "--script",
+        "res://godot_converter.gd",
+        "--path",
+        str(project_dir),
     ]
 
     if dry_run:
         logger.debug("[DRY RUN] Would run: %s", " ".join(convert_cmd))
         convert_success = True
     else:
-        logger.debug("Running Godot converter script (timeout: %ds)...", timeout_seconds)
+        logger.debug(
+            "Running Godot converter script (timeout: %ds)...", timeout_seconds
+        )
         logger.debug("Command: %s", " ".join(convert_cmd))
 
         try:
@@ -1886,7 +2109,7 @@ def run_godot_cli(
                         if "[" in line and "Processing:" in line:
                             # Extract [X/Y] from the processing line for compact display
                             # Pattern: "[1/830] Processing: Character_Ghost_01.fbx"
-                            match = re.match(r'\[(\d+)/(\d+)\]', line)
+                            match = re.match(r"\[(\d+)/(\d+)\]", line)
                             if match:
                                 current = int(match.group(1))
                                 total = int(match.group(2))
@@ -1907,7 +2130,9 @@ def run_godot_cli(
                 if process.returncode == 0:
                     convert_success = True
                 else:
-                    logger.error("Godot converter failed (exit code %d)", process.returncode)
+                    logger.error(
+                        "Godot converter failed (exit code %d)", process.returncode
+                    )
             except subprocess.TimeoutExpired:
                 process.kill()
                 logger.error("Godot converter timed out after %ds", timeout_seconds)
@@ -2024,7 +2249,9 @@ def _merge_shader_globals(existing_content: str, template_section: str) -> str:
 
     # Parse uniforms from both
     template_uniforms = _parse_shader_globals(template_section)
-    existing_uniforms = _parse_shader_globals(existing_section) if existing_section else {}
+    existing_uniforms = (
+        _parse_shader_globals(existing_section) if existing_section else {}
+    )
 
     # Find uniforms to add (in template but not in existing)
     new_uniforms = {
@@ -2037,7 +2264,11 @@ def _merge_shader_globals(existing_content: str, template_section: str) -> str:
         logger.debug("All shader uniforms already present in existing project.godot")
         return existing_content
 
-    logger.debug("Adding %d new shader uniform(s): %s", len(new_uniforms), ", ".join(new_uniforms.keys()))
+    logger.debug(
+        "Adding %d new shader uniform(s): %s",
+        len(new_uniforms),
+        ", ".join(new_uniforms.keys()),
+    )
 
     if existing_section:
         # Append new uniforms to existing section
@@ -2120,14 +2351,15 @@ def generate_project_godot(
     else:
         # Create new project.godot with pack name
         project_content = PROJECT_GODOT_TEMPLATE.replace(
-            'config/name="Synty Converted Assets"',
-            f'config/name="{pack_name}"'
+            'config/name="Synty Converted Assets"', f'config/name="{pack_name}"'
         )
         project_path.write_text(project_content, encoding="utf-8")
         logger.debug("Wrote project.godot with project name '%s'", pack_name)
 
 
-def write_conversion_log(project_dir: Path, pack_name: str, stats: ConversionStats, config: ConversionConfig) -> None:
+def write_conversion_log(
+    project_dir: Path, pack_name: str, stats: ConversionStats, config: ConversionConfig
+) -> None:
     """Write a summary log file with all warnings and errors.
 
     Appends to existing log file so multiple pack conversions accumulate.
@@ -2271,7 +2503,9 @@ def build_shader_cache(
 
                 if is_lod0:
                     # LOD0: make the shader decision
-                    shader, matched = determine_shader(mat_name, slot.uses_custom_shader)
+                    shader, matched = determine_shader(
+                        mat_name, slot.uses_custom_shader
+                    )
 
                     shader_cache[mat_name] = shader
                     prefab_slot_shaders[slot_idx] = shader
@@ -2284,7 +2518,9 @@ def build_shader_cache(
                         shader_cache[mat_name] = prefab_slot_shaders[slot_idx]
                     else:
                         # No LOD0 slot to inherit from, use custom shader check
-                        shader, matched = determine_shader(mat_name, slot.uses_custom_shader)
+                        shader, matched = determine_shader(
+                            mat_name, slot.uses_custom_shader
+                        )
                         shader_cache[mat_name] = shader
                         if not matched:
                             unmatched_materials.append(mat_name)
@@ -2324,7 +2560,8 @@ def get_filtered_material_names(
 
     logger.debug(
         "Filter '%s' matched %d materials from prefabs",
-        filter_pattern, len(filtered_materials)
+        filter_pattern,
+        len(filtered_materials),
     )
     return filtered_materials
 
@@ -2396,7 +2633,9 @@ def _normalize_texture_name(texture_name: str) -> str:
     return Path(normalized).stem
 
 
-def _material_sort_key(mesh_name: str, material_name: str) -> tuple[int, int, int, int, int]:
+def _material_sort_key(
+    mesh_name: str, material_name: str
+) -> tuple[int, int, int, int, int]:
     """Ranks fallback material candidates for a mesh name."""
     mesh_lower = mesh_name.lower()
     material_lower = material_name.lower()
@@ -2406,7 +2645,9 @@ def _material_sort_key(mesh_name: str, material_name: str) -> tuple[int, int, in
     overlap = len(mesh_tokens & material_tokens)
 
     exact_match = int(mesh_lower == material_lower)
-    prefix_match = int(mesh_lower.startswith(material_lower) or material_lower.startswith(mesh_lower))
+    prefix_match = int(
+        mesh_lower.startswith(material_lower) or material_lower.startswith(mesh_lower)
+    )
     generic_bonus = int("glow" not in material_lower and "fx" not in material_lower)
     numeric_suffix_bonus = int(not re.search(r"\s+\d+$", material_name))
 
@@ -2426,7 +2667,9 @@ def build_fallback_mesh_material_map(
         for texture_name in set(mapped_mat.textures.values()):
             normalized_texture = _normalize_texture_name(texture_name)
             if normalized_texture:
-                texture_to_materials.setdefault(normalized_texture, set()).add(mapped_mat.name)
+                texture_to_materials.setdefault(normalized_texture, set()).add(
+                    mapped_mat.name
+                )
 
     fbx_files = list(source_files.rglob("*.fbx"))
     if filter_pattern:
@@ -2439,7 +2682,9 @@ def build_fallback_mesh_material_map(
     for fbx_path in fbx_files:
         mesh_name = fbx_path.stem
         strings = _extract_binary_strings(fbx_path)
-        exact_material_hits = sorted(value for value in strings if value in material_names)
+        exact_material_hits = sorted(
+            value for value in strings if value in material_names
+        )
 
         if exact_material_hits:
             for material_name in exact_material_hits:
@@ -2454,11 +2699,18 @@ def build_fallback_mesh_material_map(
 
         texture_names = _extract_texture_names(strings)
         candidate_materials = sorted(
-            {material_name for texture_name in texture_names for material_name in texture_to_materials.get(texture_name, set())}
+            {
+                material_name
+                for texture_name in texture_names
+                for material_name in texture_to_materials.get(texture_name, set())
+            }
         )
 
         if candidate_materials:
-            chosen_material = max(candidate_materials, key=lambda name: _material_sort_key(mesh_name, name))
+            chosen_material = max(
+                candidate_materials,
+                key=lambda name: _material_sort_key(mesh_name, name),
+            )
             mesh_map[mesh_name] = [chosen_material]
             logger.debug(
                 "Fallback mapping inferred %s -> %s from textures %s",
@@ -2575,10 +2827,16 @@ def run_conversion(config: ConversionConfig) -> ConversionStats:
         config.animated_to_glb and not config.skip_fbx_copy
     )
     if skip_to_godot:
-        logger.info("Existing pack detected with all prerequisites - skipping to mesh generation")
-        logger.info("  Materials: %s, Textures: %s, Models: %s, Mapping: %s",
-                    existing_pack["has_materials"], existing_pack["has_textures"],
-                    existing_pack["has_models"], existing_pack["has_mapping"])
+        logger.info(
+            "Existing pack detected with all prerequisites - skipping to mesh generation"
+        )
+        logger.info(
+            "  Materials: %s, Textures: %s, Models: %s, Mapping: %s",
+            existing_pack["has_materials"],
+            existing_pack["has_textures"],
+            existing_pack["has_models"],
+            existing_pack["has_mapping"],
+        )
 
     # Store temp dir path for cleanup (always runs via finally, even on error)
     temp_dir_to_cleanup = None
@@ -2590,7 +2848,9 @@ def run_conversion(config: ConversionConfig) -> ConversionStats:
         logger.info("Step 3: Extracting Unity package (%s)...", pack_name)
         try:
             guid_map: GuidMap = extract_unitypackage(config.unity_package)
-            logger.debug("Extracted %d assets from Unity package", len(guid_map.guid_to_pathname))
+            logger.debug(
+                "Extracted %d assets from Unity package", len(guid_map.guid_to_pathname)
+            )
         except Exception as e:
             error_msg = f"Failed to extract Unity package: {e}"
             logger.error(error_msg)
@@ -2598,7 +2858,9 @@ def run_conversion(config: ConversionConfig) -> ConversionStats:
             return stats
 
         if guid_map.texture_guid_to_path:
-            temp_dir_to_cleanup = next(iter(guid_map.texture_guid_to_path.values())).parent
+            temp_dir_to_cleanup = next(
+                iter(guid_map.texture_guid_to_path.values())
+            ).parent
 
     try:
         # Steps 4-10: Parse and generate assets
@@ -2641,15 +2903,25 @@ def run_conversion(config: ConversionConfig) -> ConversionStats:
 
             if material_list_files:
                 for material_list_path in material_list_files:
-                    logger.debug("Parsing %s for shader detection...", material_list_path.name)
+                    logger.debug(
+                        "Parsing %s for shader detection...", material_list_path.name
+                    )
                     try:
                         file_prefabs = parse_material_list(material_list_path)
                         prefabs.extend(file_prefabs)
-                        logger.debug("  Found %d prefabs in %s", len(file_prefabs), material_list_path.name)
+                        logger.debug(
+                            "  Found %d prefabs in %s",
+                            len(file_prefabs),
+                            material_list_path.name,
+                        )
                     except Exception as e:
-                        logger.debug("Failed to parse %s: %s", material_list_path.name, e)
+                        logger.debug(
+                            "Failed to parse %s: %s", material_list_path.name, e
+                        )
 
-                logger.debug("Total prefabs from all MaterialList files: %d", len(prefabs))
+                logger.debug(
+                    "Total prefabs from all MaterialList files: %d", len(prefabs)
+                )
 
             # Determine filtered material names early (before .tres generation)
             filtered_material_names: set[str] | None = None
@@ -2657,7 +2929,9 @@ def run_conversion(config: ConversionConfig) -> ConversionStats:
                 filtered_material_names = get_filtered_material_names(
                     prefabs, config.filter_pattern, config.source_files
                 )
-                logger.info("Filter limits to %d materials", len(filtered_material_names))
+                logger.info(
+                    "Filter limits to %d materials", len(filtered_material_names)
+                )
 
             if material_list_files:
                 # Step 5: Build shader cache with LOD inheritance
@@ -2668,13 +2942,17 @@ def run_conversion(config: ConversionConfig) -> ConversionStats:
                 # Log unmatched materials for user to add patterns
                 if unmatched_materials:
                     logger.debug("=" * 60)
-                    logger.debug("UNMATCHED MATERIALS - Consider adding name patterns for:")
+                    logger.debug(
+                        "UNMATCHED MATERIALS - Consider adding name patterns for:"
+                    )
                     for mat_name in sorted(set(unmatched_materials)):
                         logger.debug("  - %s", mat_name)
                     logger.debug("=" * 60)
             else:
                 logger.info("Step 5: Mapping shader properties...")
-                logger.debug("MaterialList*.txt not found, using fallback shader detection")
+                logger.debug(
+                    "MaterialList*.txt not found, using fallback shader detection"
+                )
 
             # Map material properties to Godot equivalents (continuation of Step 5)
             logger.debug("Mapping materials to Godot format...")
@@ -2685,7 +2963,11 @@ def run_conversion(config: ConversionConfig) -> ConversionStats:
                 try:
                     # Use cached shader decision if available
                     cached_shader = shader_cache.get(unity_mat.name)
-                    mapped = map_material(unity_mat, guid_map.texture_guid_to_name, override_shader=cached_shader)
+                    mapped = map_material(
+                        unity_mat,
+                        guid_map.texture_guid_to_name,
+                        override_shader=cached_shader,
+                    )
                     mapped_materials.append(mapped)
 
                     # Collect required textures
@@ -2697,7 +2979,11 @@ def run_conversion(config: ConversionConfig) -> ConversionStats:
                     logger.debug(warning_msg)
                     stats.warnings.append(warning_msg)
 
-            logger.debug("Mapped %d materials, requiring %d textures", len(mapped_materials), len(required_textures))
+            logger.debug(
+                "Mapped %d materials, requiring %d textures",
+                len(mapped_materials),
+                len(required_textures),
+            )
 
             # Step 6: Resolve shader paths (find existing or copy missing)
             # This must happen before .tres generation so we can use discovered paths
@@ -2723,7 +3009,10 @@ def run_conversion(config: ConversionConfig) -> ConversionStats:
 
             for mapped_mat in mapped_materials:
                 # Skip materials not used by filtered FBX files
-                if filtered_material_names is not None and mapped_mat.name not in filtered_material_names:
+                if (
+                    filtered_material_names is not None
+                    and mapped_mat.name not in filtered_material_names
+                ):
                     continue
 
                 try:
@@ -2732,7 +3021,7 @@ def run_conversion(config: ConversionConfig) -> ConversionStats:
                         mapped_mat,
                         shader_base="res://shaders",  # Fallback if shader not in shader_paths
                         texture_base=texture_base,
-                        shader_paths=shader_paths
+                        shader_paths=shader_paths,
                     )
 
                     # Sanitize filename
@@ -2748,7 +3037,9 @@ def run_conversion(config: ConversionConfig) -> ConversionStats:
                     stats.materials_generated += 1
 
                 except Exception as e:
-                    warning_msg = f"Failed to generate .tres for '{mapped_mat.name}': {e}"
+                    warning_msg = (
+                        f"Failed to generate .tres for '{mapped_mat.name}': {e}"
+                    )
                     logger.debug(warning_msg)
                     stats.warnings.append(warning_msg)
 
@@ -2767,45 +3058,76 @@ def run_conversion(config: ConversionConfig) -> ConversionStats:
                 )
                 logger.debug(
                     "Smart texture filter reduced textures from %d to %d",
-                    original_texture_count, len(required_textures)
+                    original_texture_count,
+                    len(required_textures),
                 )
 
             logger.info("Step 8: Copying %d textures...", len(required_textures))
             # Find all Textures directories recursively for complex nested structures (optional fallback)
             texture_dirs = [config.source_files / "Textures"]
             if not texture_dirs[0].exists():
-                texture_dirs = [d for d in config.source_files.rglob("Textures") if d.is_dir()]
+                texture_dirs = [
+                    d for d in config.source_files.rglob("Textures") if d.is_dir()
+                ]
                 if texture_dirs:
-                    logger.debug("Found %d Textures directories as fallback sources", len(texture_dirs))
+                    logger.debug(
+                        "Found %d Textures directories as fallback sources",
+                        len(texture_dirs),
+                    )
                     for td in texture_dirs:
                         logger.debug("  Textures dir: %s", td)
                 else:
-                    logger.debug("No SourceFiles/Textures found - using .unitypackage textures only")
-            source_textures = texture_dirs[0] if texture_dirs else config.source_files / "Textures"
+                    logger.debug(
+                        "No SourceFiles/Textures found - using .unitypackage textures only"
+                    )
+            source_textures = (
+                texture_dirs[0] if texture_dirs else config.source_files / "Textures"
+            )
             # Additional texture directories (all except the primary one)
-            additional_texture_dirs = texture_dirs[1:] if len(texture_dirs) > 1 else None
+            additional_texture_dirs = (
+                texture_dirs[1:] if len(texture_dirs) > 1 else None
+            )
             output_textures = pack_output_dir / "textures"
 
             # Build reverse lookup: texture_name -> GUID
-            texture_name_to_guid = {name: guid for guid, name in guid_map.texture_guid_to_name.items()}
+            texture_name_to_guid = {
+                name: guid for guid, name in guid_map.texture_guid_to_name.items()
+            }
 
             # Copy required textures (no fallback - missing textures will be logged as warnings)
             # Prefer textures from .unitypackage temp files over SourceFiles
-            stats.textures_copied, stats.textures_fallback, stats.textures_missing = copy_textures(
-                source_textures,
-                output_textures,
-                required_textures,
-                config.dry_run,
-                fallback_texture=None,  # No fallback - let missing textures fail
-                texture_guid_to_path=guid_map.texture_guid_to_path,
-                texture_name_to_guid=texture_name_to_guid,
-                additional_texture_dirs=additional_texture_dirs,
-                high_quality_textures=config.high_quality_textures,
+            stats.textures_copied, stats.textures_fallback, stats.textures_missing = (
+                copy_textures(
+                    source_textures,
+                    output_textures,
+                    required_textures,
+                    config.dry_run,
+                    fallback_texture=None,  # No fallback - let missing textures fail
+                    texture_guid_to_path=guid_map.texture_guid_to_path,
+                    texture_name_to_guid=texture_name_to_guid,
+                    additional_texture_dirs=additional_texture_dirs,
+                    high_quality_textures=config.high_quality_textures,
+                )
             )
 
             mesh_material_map: dict[str, list[str]] = {}
             unresolved_meshes: list[str] = []
             referenced_materials: set[str] = set()
+
+            fbx_files = find_source_fbx_files(
+                config.source_files,
+                filter_pattern=config.filter_pattern,
+            )
+            model_scale_overrides = build_unity_model_scale_overrides(
+                guid_map,
+                fbx_files,
+                animated_to_glb=config.animated_to_glb,
+            )
+            if model_scale_overrides:
+                logger.debug(
+                    "Resolved Unity model scale overrides for %d files",
+                    len(model_scale_overrides),
+                )
 
             if prefabs:
                 mesh_material_map = get_mesh_to_materials_map(prefabs)
@@ -2815,7 +3137,9 @@ def run_conversion(config: ConversionConfig) -> ConversionStats:
                             if slot.material_name:
                                 referenced_materials.add(slot.material_name)
             else:
-                logger.info("No MaterialList data available - inferring mesh-material mapping from FBX metadata")
+                logger.info(
+                    "No MaterialList data available - inferring mesh-material mapping from FBX metadata"
+                )
                 mesh_material_map, unresolved_meshes = build_fallback_mesh_material_map(
                     config.source_files,
                     mapped_materials,
@@ -2831,14 +3155,14 @@ def run_conversion(config: ConversionConfig) -> ConversionStats:
 
             # Step 9: Prepare model assets
             if not config.skip_fbx_copy:
-                fbx_files = find_source_fbx_files(
-                    config.source_files,
-                    filter_pattern=config.filter_pattern,
-                )
                 total_count = len(fbx_files)
 
                 if config.animated_to_glb:
-                    glb_target_count = sum(1 for source_path, _ in fbx_files if should_convert_fbx_to_glb(source_path))
+                    glb_target_count = sum(
+                        1
+                        for source_path, _ in fbx_files
+                        if should_convert_fbx_to_glb(source_path)
+                    )
                     logger.info(
                         "Step 9: Preparing %d model files (%d GLB targets via Blender)...",
                         total_count,
@@ -2860,12 +3184,20 @@ def run_conversion(config: ConversionConfig) -> ConversionStats:
                     filter_pattern=config.filter_pattern,
                     blender_exe=config.blender_exe,
                     animated_to_glb=config.animated_to_glb,
-                    mesh_material_map=mesh_material_map if config.animated_to_glb else None,
-                    mapped_materials=mapped_materials if config.animated_to_glb else None,
+                    mesh_material_map=(
+                        mesh_material_map if config.animated_to_glb else None
+                    ),
+                    mapped_materials=(
+                        mapped_materials if config.animated_to_glb else None
+                    ),
                     textures_dir=output_textures if config.animated_to_glb else None,
                 )
 
-                if stats.fbx_copied == 0 and stats.fbx_skipped == 0 and total_count == 0:
+                if (
+                    stats.fbx_copied == 0
+                    and stats.fbx_skipped == 0
+                    and total_count == 0
+                ):
                     warning_msg = f"No FBX files found in {config.source_files}"
                     stats.warnings.append(warning_msg)
             else:
@@ -2895,7 +3227,9 @@ def run_conversion(config: ConversionConfig) -> ConversionStats:
                         len(mesh_material_map),
                     )
                 else:
-                    logger.debug("Fallback mapping could not infer any mesh-material relationships")
+                    logger.debug(
+                        "Fallback mapping could not infer any mesh-material relationships"
+                    )
 
                 if unresolved_meshes:
                     logger.debug(
@@ -2918,7 +3252,7 @@ def run_conversion(config: ConversionConfig) -> ConversionStats:
                 if missing_materials:
                     logger.debug(
                         "Found %d missing material(s) - these meshes will use default materials:",
-                        len(missing_materials)
+                        len(missing_materials),
                     )
                     for mat_name in sorted(missing_materials):
                         logger.debug("  Missing: %s", mat_name)
@@ -2958,6 +3292,7 @@ def run_conversion(config: ConversionConfig) -> ConversionStats:
                 mesh_format=config.mesh_format,
                 filter_pattern=config.filter_pattern,
                 mesh_scale=config.mesh_scale,
+                model_scale_overrides=model_scale_overrides,
                 pack_name=full_pack_name,
                 output_subfolder=config.output_subfolder,
                 flatten_output=config.flatten_output,

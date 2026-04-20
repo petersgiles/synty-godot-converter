@@ -15,6 +15,7 @@ Unity Package Structure:
 from __future__ import annotations
 
 import logging
+import re
 import tarfile
 import tempfile
 from dataclasses import dataclass, field
@@ -24,6 +25,9 @@ logger = logging.getLogger(__name__)
 
 # Supported texture formats (case-insensitive)
 TEXTURE_EXTENSIONS = frozenset({".png", ".tga", ".jpg", ".jpeg"})
+GLOBAL_SCALE_PATTERN = re.compile(
+    r"^\s*globalScale:\s*([0-9eE+\-.]+)\s*$", re.MULTILINE
+)
 
 
 @dataclass
@@ -73,13 +77,15 @@ class GuidMap:
     guid_to_content: dict[str, bytes] = field(default_factory=dict)
     texture_guid_to_name: dict[str, str] = field(default_factory=dict)
     texture_guid_to_path: dict[str, Path] = field(default_factory=dict)
+    model_path_to_scale: dict[str, float] = field(default_factory=dict)
 
     def __repr__(self) -> str:
         return (
             f"GuidMap(pathnames={len(self.guid_to_pathname)}, "
             f"contents={len(self.guid_to_content)}, "
             f"textures={len(self.texture_guid_to_name)}, "
-            f"texture_paths={len(self.texture_guid_to_path)})"
+            f"texture_paths={len(self.texture_guid_to_path)}, "
+            f"model_scales={len(self.model_path_to_scale)})"
         )
 
 
@@ -147,11 +153,19 @@ def extract_unitypackage(package_path: Path) -> GuidMap:
 
     # Extract textures to temp files
     temp_dir = Path(tempfile.mkdtemp(prefix="synty_textures_"))
-    texture_guid_to_path = _extract_textures_to_temp(guid_data, guid_to_pathname, temp_dir)
+    texture_guid_to_path = _extract_textures_to_temp(
+        guid_data, guid_to_pathname, temp_dir
+    )
     logger.debug(
         "Extracted %d textures to temp directory: %s",
         len(texture_guid_to_path),
         temp_dir,
+    )
+
+    model_path_to_scale = _extract_model_import_scales(guid_data, guid_to_pathname)
+    logger.debug(
+        "Extracted Unity import scale metadata for %d model files",
+        len(model_path_to_scale),
     )
 
     return GuidMap(
@@ -159,7 +173,53 @@ def extract_unitypackage(package_path: Path) -> GuidMap:
         guid_to_content=guid_to_content,
         texture_guid_to_name=texture_guid_to_name,
         texture_guid_to_path=texture_guid_to_path,
+        model_path_to_scale=model_path_to_scale,
     )
+
+
+def _extract_model_import_scales(
+    guid_data: dict[str, dict[str, bytes]],
+    guid_to_pathname: dict[str, str],
+) -> dict[str, float]:
+    """Extract Unity ModelImporter.globalScale values from .fbx asset.meta files.
+
+    Unity stores FBX import settings (including Scale Factor) in asset.meta.
+    For ModelImporter, the relevant key is `globalScale`.
+
+    Args:
+        guid_data: Parsed tar structure from _parse_tar_structure.
+        guid_to_pathname: GUID to Unity asset path.
+
+    Returns:
+        Mapping of Unity FBX pathname (e.g., Assets/.../Model.fbx) to
+        positive globalScale float values.
+    """
+    model_path_to_scale: dict[str, float] = {}
+
+    for guid, pathname in guid_to_pathname.items():
+        if not pathname.lower().endswith(".fbx"):
+            continue
+
+        files = guid_data.get(guid, {})
+        meta_bytes = files.get("asset.meta")
+        if meta_bytes is None:
+            continue
+
+        meta_text = meta_bytes.decode("utf-8", errors="ignore")
+
+        match = GLOBAL_SCALE_PATTERN.search(meta_text)
+        if match is None:
+            continue
+
+        try:
+            global_scale = float(match.group(1))
+        except ValueError:
+            continue
+
+        if global_scale > 0:
+            model_path_to_scale[pathname] = global_scale
+
+    return model_path_to_scale
 
 
 def _parse_tar_structure(tar: tarfile.TarFile) -> dict[str, dict[str, bytes]]:

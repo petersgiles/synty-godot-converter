@@ -86,6 +86,7 @@ var config_keep_meshes_together: bool = false
 var config_mesh_format: String = "tscn"
 var config_filter_pattern: String = ""
 var config_mesh_scale: float = 1.0
+var config_model_scale_overrides: Dictionary = {}
 var config_output_subfolder: String = ""
 var config_retain_subfolders: bool = false
 
@@ -106,7 +107,7 @@ func load_converter_config() -> bool:
 	var file := FileAccess.open(CONFIG_PATH, FileAccess.READ)
 	if file == null:
 		push_warning("Failed to open converter_config.json: %s" % error_string(FileAccess.get_open_error()))
-		return true  # Use defaults
+		return true # Use defaults
 
 	var json_text := file.get_as_text()
 	file.close()
@@ -139,11 +140,22 @@ func load_converter_config() -> bool:
 			config_mesh_scale = scale_val
 		else:
 			push_warning("Invalid mesh_scale %s, using 1.0" % scale_val)
+	var model_scale_val = data.get("model_scale_overrides", {})
+	if model_scale_val is Dictionary:
+		for key in model_scale_val.keys():
+			var key_str := String(key).to_lower()
+			var key_scale := float(model_scale_val[key])
+			if key_scale > 0:
+				config_model_scale_overrides[key_str] = key_scale
+			else:
+				push_warning("Invalid model scale override for %s: %s" % [key_str, key_scale])
+	else:
+		push_warning("Invalid model_scale_overrides format; expected Dictionary")
 	var subfolder_val = data.get("output_subfolder", null)
 	config_output_subfolder = subfolder_val if subfolder_val != null else ""
 	# flatten_output from config is inverted to retain_subfolders
 	# flatten_output=true means don't retain subfolders, so retain_subfolders = NOT flatten_output
-	var flatten_val = data.get("flatten_output", true)  # default is flatten (true)
+	var flatten_val = data.get("flatten_output", true) # default is flatten (true)
 	config_retain_subfolders = not flatten_val
 
 	print("Config loaded:")
@@ -155,6 +167,8 @@ func load_converter_config() -> bool:
 		print("  filter_pattern: %s" % config_filter_pattern)
 	if config_mesh_scale != 1.0:
 		print("  mesh_scale: %s" % config_mesh_scale)
+	if not config_model_scale_overrides.is_empty():
+		print("  model_scale_overrides: %d" % config_model_scale_overrides.size())
 	if not config_output_subfolder.is_empty():
 		print("  output_subfolder: %s" % config_output_subfolder)
 	if config_retain_subfolders:
@@ -174,14 +188,14 @@ func load_converter_config() -> bool:
 ##    c. Saves scenes to {pack}/meshes/
 ## 5. Prints summary and exits with appropriate code
 func _init() -> void:
-	print("=" .repeat(60))
+	print("=".repeat(60))
 	print("Synty Shader Converter - FBX to Scene Files")
-	print("=" .repeat(60))
+	print("=".repeat(60))
 	print("")
 
 	# Create wireframe material for collision meshes
 	collision_material = StandardMaterial3D.new()
-	collision_material.albedo_color = Color(0.0, 1.0, 0.0)  # Green wireframe
+	collision_material.albedo_color = Color(0.0, 1.0, 0.0) # Green wireframe
 	collision_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	collision_material.wireframe = true
 
@@ -427,6 +441,12 @@ func process_model_file(model_path: String) -> void:
 	var models_prefix := current_pack_folder + "/models/"
 	var relative_path := model_path.trim_prefix(models_prefix)
 	var relative_dir := relative_path.get_base_dir()
+	var model_scale := 1.0
+	var scale_key := relative_path.to_lower()
+	if config_model_scale_overrides.has(scale_key):
+		model_scale = float(config_model_scale_overrides[scale_key])
+		if model_scale != 1.0:
+			print("    Unity model scale override: %s -> %s" % [scale_key, model_scale])
 
 	# If retain_subfolders is disabled (default), flatten the directory structure
 	if not config_retain_subfolders:
@@ -465,15 +485,15 @@ func process_model_file(model_path: String) -> void:
 	var is_rigged_model := _scene_has_rigged_content(scene_instance)
 	if is_rigged_model and not config_keep_meshes_together:
 		print("    Rigged model detected; saving combined scene with material overrides")
-		save_fbx_as_single_scene(scene_instance, mesh_instances, relative_dir, source_name, true)
+		save_fbx_as_single_scene(scene_instance, mesh_instances, relative_dir, source_name, model_scale, true)
 
 	if config_keep_meshes_together:
 		# Keep all meshes together in a single scene file
-		save_fbx_as_single_scene(scene_instance, mesh_instances, relative_dir, source_name)
+		save_fbx_as_single_scene(scene_instance, mesh_instances, relative_dir, source_name, model_scale)
 	else:
 		# Extract and save each mesh separately (default behavior)
 		for mesh_instance in mesh_instances:
-			extract_and_save_mesh(mesh_instance, relative_dir, source_name)
+			extract_and_save_mesh(mesh_instance, relative_dir, source_name, model_scale)
 
 	# Clean up
 	scene_instance.free()
@@ -487,9 +507,10 @@ func process_model_file(model_path: String) -> void:
 ## @param mesh_instances Array of all MeshInstance3D nodes to process.
 ## @param relative_dir Subdirectory path relative to meshes/ for output.
 ## @param fbx_name Name of the FBX file (used as scene name).
-func save_fbx_as_single_scene(scene_root: Node, mesh_instances: Array[MeshInstance3D], relative_dir: String, fbx_name: String, force_combined_subfolder := false) -> void:
+func save_fbx_as_single_scene(scene_root: Node, mesh_instances: Array[MeshInstance3D], relative_dir: String, fbx_name: String, model_scale_factor := 1.0, force_combined_subfolder := false) -> void:
 	var materials_dir := current_pack_folder + "/materials"
 	var materials_applied := 0
+	var effective_mesh_scale := config_mesh_scale * model_scale_factor
 
 	# Apply materials to each mesh instance
 	for mesh_instance in mesh_instances:
@@ -499,9 +520,9 @@ func save_fbx_as_single_scene(scene_root: Node, mesh_instances: Array[MeshInstan
 		if original_mesh == null or original_mesh.get_surface_count() == 0:
 			continue
 
-		# Apply mesh scale if configured
-		if config_mesh_scale != 1.0:
-			original_mesh = scale_mesh(original_mesh, config_mesh_scale)
+		# Apply global and per-model mesh scale if configured.
+		if effective_mesh_scale != 1.0:
+			original_mesh = scale_mesh(original_mesh, effective_mesh_scale)
 			mesh_instance.mesh = original_mesh
 
 		# Check if this is a collision mesh
@@ -664,9 +685,10 @@ func find_mesh_instances(node: Node) -> Array[MeshInstance3D]:
 ## @param mesh_instance The MeshInstance3D to extract.
 ## @param relative_dir Subdirectory path relative to meshes/ for output.
 ## @param fbx_name Name of source FBX (used for duplicate name resolution).
-func extract_and_save_mesh(mesh_instance: MeshInstance3D, relative_dir: String, fbx_name: String) -> void:
+func extract_and_save_mesh(mesh_instance: MeshInstance3D, relative_dir: String, fbx_name: String, model_scale_factor := 1.0) -> void:
 	var mesh_name := String(mesh_instance.name)
 	var original_mesh := mesh_instance.mesh
+	var effective_mesh_scale := config_mesh_scale * model_scale_factor
 
 	if original_mesh == null:
 		print("      Skipping %s (null mesh)" % mesh_name)
@@ -678,17 +700,25 @@ func extract_and_save_mesh(mesh_instance: MeshInstance3D, relative_dir: String, 
 		meshes_skipped += 1
 		return
 
-	# Apply mesh scale if configured
-	if config_mesh_scale != 1.0:
-		original_mesh = scale_mesh(original_mesh, config_mesh_scale)
+	# Apply global and per-model mesh scale if configured.
+	if effective_mesh_scale != 1.0:
+		original_mesh = scale_mesh(original_mesh, effective_mesh_scale)
 
 	# Check if this is a collision mesh - apply green wireframe material
 	var is_collision := mesh_name.to_lower().contains("collision") or mesh_name.to_lower().ends_with("_col")
 
 	# Create a MeshInstance3D node for the scene
 	var scene_mesh_instance := MeshInstance3D.new()
-	scene_mesh_instance.mesh = original_mesh  # Use original mesh (or scaled copy)
+	scene_mesh_instance.mesh = original_mesh # Use original mesh (or scaled copy)
 	scene_mesh_instance.name = mesh_name
+	# Preserve global basis so parent/root FBX scaling is retained in separate exports.
+	# global_transform requires scene tree membership, so walk the parent chain manually.
+	var _accumulated := Transform3D.IDENTITY
+	var _node: Node3D = mesh_instance
+	while _node != null:
+		_accumulated = _node.transform * _accumulated
+		_node = _node.get_parent() as Node3D
+	scene_mesh_instance.transform = Transform3D(_accumulated.basis, Vector3.ZERO)
 
 	# Determine base output path using current pack folder
 	var meshes_dir := current_pack_folder + "/meshes/" + _get_mesh_subfolder()
@@ -733,7 +763,7 @@ func extract_and_save_mesh(mesh_instance: MeshInstance3D, relative_dir: String, 
 		else:
 			printerr("      ERROR: Failed to save collision: %s" % mesh_name)
 			errors += 1
-		return  # Skip normal material lookup
+		return # Skip normal material lookup
 
 	# Get materials for this mesh (loaded as external resources)
 	var material_names := get_material_names_for_mesh(mesh_name, fbx_name)
@@ -1058,10 +1088,10 @@ func _levenshtein_distance(s1: String, s2: String) -> int:
 
 			curr_row[j] = mini(
 				mini(
-					prev_row[j] + 1,      # Deletion
-					curr_row[j - 1] + 1   # Insertion
+					prev_row[j] + 1, # Deletion
+					curr_row[j - 1] + 1 # Insertion
 				),
-				prev_row[j - 1] + cost    # Substitution
+				prev_row[j - 1] + cost # Substitution
 			)
 
 		# Swap rows
@@ -1166,7 +1196,7 @@ func find_material_path(mat_name: String, materials_dir: String) -> String:
 		# Try to find _Mat_ first (e.g., PolygonFantasyKingdom_Mat_Glass -> Glass)
 		var mat_idx := stripped.find("_Mat_")
 		if mat_idx > 0:
-			stripped = stripped.substr(mat_idx + 5)  # len("_Mat_") = 5
+			stripped = stripped.substr(mat_idx + 5) # len("_Mat_") = 5
 		else:
 			# Try just first underscore after Polygon prefix (e.g., PolygonNature_Tree -> Tree)
 			var first_underscore := stripped.find("_")
@@ -1324,9 +1354,9 @@ func _ensure_directory_exists(dir_path: String) -> void:
 ## Shows counts of saved meshes, skipped meshes, warnings, and errors.
 ## Provides a final status message based on results.
 func print_summary() -> void:
-	print("=" .repeat(60))
+	print("=".repeat(60))
 	print("Conversion Complete")
-	print("=" .repeat(60))
+	print("=".repeat(60))
 	print("  Output format:  .%s" % config_mesh_format)
 	if config_keep_meshes_together:
 		print("  Mode:           Combined scenes (one per FBX)")
@@ -1336,7 +1366,7 @@ func print_summary() -> void:
 	print("  Meshes skipped: %d" % meshes_skipped)
 	print("  Warnings:       %d" % warnings)
 	print("  Errors:         %d" % errors)
-	print("=" .repeat(60))
+	print("=".repeat(60))
 
 	if errors > 0:
 		print("")
