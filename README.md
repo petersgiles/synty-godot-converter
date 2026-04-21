@@ -25,6 +25,7 @@ Convert Synty Studios Unity asset packs (`.unitypackage` files) to Godot 4.6 wit
 - **Output subfolder organization** - Organize converted packs into custom subfolders with `--output-subfolder`
 - **Retain source structure** - Preserve `Source_Files/FBX/` subdirectory structure in mesh output with `--retain-subfolders`
 - **Optional Blender GLB path** - Convert character and animation FBX files to GLB first with `--animated-to-glb`
+- **Godot humanoid retarget workflow** - Standardize characters and animation sources to `SkeletonProfileHumanoid` on import so animations can be shared
 
 ## Quick Start
 
@@ -41,6 +42,11 @@ python converter.py \
 # GUI (requires additional dependencies)
 pip install -r requirements-gui.txt
 python gui.py
+
+# Godot humanoid retarget workflow
+# See "Godot Skeleton Retargeting" below for the import settings to use for:
+# - ../simple-fantasy/SourceFiles/Characters/SF_Characters.fbx
+# - /home/pete/code/synty/animations/Animations/gltf/Rig_Medium/*.glb
 ```
 
 ## Installation
@@ -80,6 +86,90 @@ This installs CustomTkinter for the graphical interface.
 | `--retain-subfolders` | No | Preserve Source_Files/FBX/ subdirectory structure in mesh output |
 | `--blender` | No | Path to Blender executable for headless FBX-to-GLB export |
 | `--animated-to-glb` | No | Convert character/animation FBX files to GLB before Godot import |
+
+## Godot Skeleton Retargeting
+
+Use Godot's importer to standardize both the character and the mannequin animation sources to the same `SkeletonProfileHumanoid`. This is the correct workflow for Godot 4.4/4.6.
+
+### Assets to use
+
+| Purpose | Recommended asset |
+|------|------|
+| Character source | `../simple-fantasy/SourceFiles/Characters/SF_Characters.fbx` |
+| Medium mannequin animations | `/home/pete/code/synty/animations/Animations/gltf/Rig_Medium/*.glb` |
+| Large mannequin animations | `/home/pete/code/synty/animations/Animations/gltf/Rig_Large/*.glb` |
+
+Use **Medium with Medium** and **Large with Large**. Do not start from the already-converted `output/SIMPLE_Fantasy/models/` files for this workflow.
+
+### 1. Import the character as a scene
+
+1. Copy `SF_Characters.fbx` into your Godot project.
+2. Select it in the FileSystem dock.
+3. In the Import tab, set **Import As** to **Scene**.
+4. Click **Advanced...**.
+5. In the scene tree on the left, select the imported `Skeleton3D`.
+6. In the **Retarget** section on the right:
+   1. Create or assign a `BoneMap`.
+   2. Set **Skeleton Profile** to `SkeletonProfileHumanoid`.
+   3. Click **Auto Mapping**.
+   4. Manually fix any red or magenta mappings before continuing.
+7. In **Bone Renamer**:
+   1. Enable **Rename Bones**.
+   2. Enable **Unique Node** so the imported skeleton path is standardized.
+8. In **Rest Fixer**:
+   1. Enable **Overwrite Axis**.
+   2. Enable **Apply Node Transform** if the imported skeleton has a non-identity node transform.
+   3. Enable **Fix Silhouette** only if the model is clearly in A-pose or otherwise off from the humanoid reference pose.
+9. Leave **Remove Tracks** options off for the character scene import.
+10. Click **Reimport**.
+
+### 2. Import each mannequin animation file as an animation library
+
+1. Copy one mannequin animation file into the project, for example `Rig_Medium_General.glb`.
+2. Select it in the FileSystem dock.
+3. In the Import tab, set **Import As** to **Animation Library**.
+4. Click **Advanced...**.
+5. Select the imported `Skeleton3D`.
+6. In the **Retarget** section:
+   1. Assign a `BoneMap`.
+   2. Set **Skeleton Profile** to `SkeletonProfileHumanoid`.
+   3. Click **Auto Mapping**.
+   4. Manually fix any bad mappings.
+7. In **Bone Renamer**:
+   1. Enable **Rename Bones**.
+   2. Enable **Unique Node**.
+8. In **Remove Tracks**:
+   1. Enable **Except Bone Transform**.
+   2. Enable **Unimportant Positions**.
+   3. Enable **Unmapped Bones**.
+9. In **Rest Fixer**:
+   1. Enable **Overwrite Axis**.
+   2. Enable **Normalize Position Tracks**.
+   3. Enable **Apply Node Transform** if needed.
+   4. Enable **Fix Silhouette** only when the source is not already close to the humanoid reference pose.
+10. Click **Reimport**. Godot will generate an animation library resource for that file.
+
+### 3. Load the animation library onto the character
+
+1. Open the imported character scene.
+2. Make sure it has an `AnimationPlayer`.
+3. In the Animation panel, use **Manage Animations -> Load Library**.
+4. Choose the imported mannequin animation library resource.
+5. Play a few clips and confirm the pose, feet, and root motion look sane.
+
+### Recommended first test
+
+1. Import `SF_Characters.fbx` as a scene.
+2. Import one file such as `Rig_Medium_General.glb` as an animation library.
+3. Get one clip working before importing the rest of the mannequin packs.
+
+### Troubleshooting
+
+1. If limbs twist or point the wrong way, check **Overwrite Axis** first.
+2. If the whole skeleton is offset or rotated, try **Apply Node Transform**.
+3. If the model is in A-pose and the animation expects T-pose, try **Fix Silhouette**.
+4. If the animation changes body shape strangely, make sure **Unimportant Positions** is enabled on the animation library import.
+5. If sharing still fails, check the `BoneMap` warnings and fix every unmapped critical humanoid bone before reimporting.
 
 ## Output Structure
 
