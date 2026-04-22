@@ -91,6 +91,8 @@ This installs CustomTkinter for the graphical interface.
 
 Use Godot's importer to standardize both the character and the mannequin animation sources to the same `SkeletonProfileHumanoid`. This is the correct workflow for Godot 4.4/4.6.
 
+For `SF_Characters.fbx`, this repo now also includes a Godot addon at `addons/synty_import_helper` that can apply the known-good character import preset and attach a post-import fixer script automatically.
+
 ### Assets to use
 
 | Purpose | Recommended asset |

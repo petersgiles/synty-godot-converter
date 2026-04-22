@@ -30,6 +30,25 @@ Standardize both the character and animation imports to Godot's `SkeletonProfile
 
 ## Workflow
 
+### Automation available in this repo
+
+There is now a Godot addon in:
+
+```text
+addons/synty_import_helper
+```
+
+It currently automates the `SF_Characters.fbx` character import side:
+
+1. applies the known-good humanoid `BoneMap`,
+2. sets the import post-process script,
+3. standardizes the skeleton node name to `Skeleton`,
+4. reparents imported character meshes under the main skeleton if needed,
+5. hides all character meshes by default,
+6. validates that the expected character mesh roster is present.
+
+This addon does **not** yet fully automate the animation-library import settings. Those still use the manual Godot workflow below.
+
 ### 1. Import the character scene
 
 Use the character scene:
@@ -39,6 +58,26 @@ Use the character scene:
 ```
 
 If rebuilding or reimporting the character source, keep the skeleton standardized to `SkeletonProfileHumanoid`.
+
+#### Using the addon for `SF_Characters.fbx`
+
+1. Copy:
+
+```text
+/home/pete/code/synty/synty-godot-converter/addons/synty_import_helper
+```
+
+into your Godot project's `addons/` folder.
+2. Enable **Synty Import Helper** in **Project Settings -> Plugins**.
+3. Select `SF_Characters.fbx` in the FileSystem dock.
+4. Run:
+
+```text
+Synty -> Apply SF_Characters humanoid import preset
+```
+
+5. The plugin updates the `.import` file and reimports the FBX.
+6. After reimport, the imported root gets a helper script that exposes `show_character()` / `hide_all_characters()` behavior on the imported character library scene.
 
 ### 2. Copy the animation library into the Godot project
 
