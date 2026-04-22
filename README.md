@@ -44,9 +44,7 @@ pip install -r requirements-gui.txt
 python gui.py
 
 # Godot humanoid retarget workflow
-# See "Godot Skeleton Retargeting" below for the import settings to use for:
-# - ../simple-fantasy/SourceFiles/Characters/SF_Characters.fbx
-# - /home/pete/code/synty/animations/Animations/gltf/Rig_Medium/*.glb
+
 ```
 
 ## Installation
@@ -93,16 +91,6 @@ Use Godot's importer to standardize both the character and the mannequin animati
 
 For `SF_Characters.fbx`, this repo now also includes a Godot addon at `addons/synty_import_helper` that can apply the known-good character import preset and attach a post-import fixer script automatically.
 
-### Assets to use
-
-| Purpose | Recommended asset |
-|------|------|
-| Character source | `../simple-fantasy/SourceFiles/Characters/SF_Characters.fbx` |
-| Medium mannequin animations | `/home/pete/code/synty/animations/Animations/gltf/Rig_Medium/*.glb` |
-| Large mannequin animations | `/home/pete/code/synty/animations/Animations/gltf/Rig_Large/*.glb` |
-
-Use **Medium with Medium** and **Large with Large**. Do not start from the already-converted `output/SIMPLE_Fantasy/models/` files for this workflow.
-
 ### 1. Import the character as a scene
 
 1. Copy `SF_Characters.fbx` into your Godot project.
@@ -125,9 +113,9 @@ Use **Medium with Medium** and **Large with Large**. Do not start from the alrea
 9. Leave **Remove Tracks** options off for the character scene import.
 10. Click **Reimport**.
 
-### 2. Import each mannequin animation file as an animation library
+### 2. Import each animation file as an animation library
 
-1. Copy one mannequin animation file into the project, for example `Rig_Medium_General.glb`.
+1. Copy one animation file into the project, for example `*.glb`.
 2. Select it in the FileSystem dock.
 3. In the Import tab, set **Import As** to **Animation Library**.
 4. Click **Advanced...**.
